@@ -2,6 +2,8 @@ import { Server, Socket } from "socket.io";
 import { assignRandomAdvantage } from "./assignAdvantage";
 import { Advantage } from "../shared/types";
 
+console.log("✅ setupSocketHandlers loaded");
+
 type PlayerStats = {
   gamesPlayed: number;
   wins: number;
@@ -52,25 +54,47 @@ function updateElo(winnerId: string, loserId: string, isDraw = false) {
 
 export function setupSocketHandlers(io: Server) {
   io.on("connection", (socket: Socket) => {
-    socket.on("joinRoom", (roomId: string) => {
+    console.log("🔌 A client connected:", socket.id);
+    socket.on("joinRoom", (roomId: string) => { 
+      const alreadyInRoom = rooms[roomId] &&
+        (rooms[roomId].white === socket.id || rooms[roomId].black === socket.id);
+
+        if (alreadyInRoom) {
+          console.log(`⚠️ ${socket.id} already joined room ${roomId}`);
+          return;
+        }
+
       socket.join(roomId);
+      console.log(`🔌 ${socket.id} is joining room ${roomId}`);
+      
+      if (!rooms[roomId]) {
+        rooms[roomId] = {};
+      }
+      
       const room = rooms[roomId] || {};
 
       if (!room.white) {
         room.white = socket.id;
         room.whiteAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "white");
+        console.log(`⚪ Assigned ${socket.id} as white`);
       } else if (!room.black) {
         room.black = socket.id;
         room.blackAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "black");
+        console.log(`⚫ Assigned ${socket.id} as black`);
+      
+        io.to(roomId).emit("opponentJoined");
       } else {
         socket.emit("roomFull");
+        console.log(`❌ Room ${roomId} is full`);
         return;
       }
+      console.log(`✅ Room state:`, rooms[roomId]);
 
-      rooms[roomId] = room;
-      socket.to(roomId).emit("opponentJoined");
+      socket.on("sendMove", ({ roomId, move }) => {
+        socket.to(roomId).emit("receiveMove", move);
+      });
     });
 
     socket.on("disconnect", () => {
