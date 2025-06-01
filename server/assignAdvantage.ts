@@ -24,12 +24,6 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 const testSequence: Advantage[] = [
   {
-    id: "castle_master",
-    name: "Castle Master",
-    description: "You may castle even through check once.",
-    rarity: "legendary"
-  },
-  {
     id: "auto_deflect",
     name: "Auto-Deflect",
     description: "First time a piece is captured, it dodges instead.",
