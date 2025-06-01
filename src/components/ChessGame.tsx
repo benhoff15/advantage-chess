@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { socket } from "../socket";
+import { Advantage } from "../../shared/types";
 
 export default function ChessGame() {
   const { roomId } = useParams(); // 🔥 This gets /game/:roomId
@@ -34,6 +35,10 @@ export default function ChessGame() {
       setFen(game.fen());
     });
 
+    socket.on("revealAdvantages", (data) => {
+      setRevealedAdvantages(data);
+    });
+
     return () => {
       socket.off("colorAssigned");
       socket.off("opponentJoined");
@@ -41,6 +46,12 @@ export default function ChessGame() {
       socket.off("receiveMove");
     };
   }, [game, roomId]);
+  
+  const [revealedAdvantages, setRevealedAdvantages] = useState<{
+    whiteAdvantage?: Advantage;
+    blackAdvantage?: Advantage;
+    winnerColor?: "white" | "black" | null;
+  } | null>(null);
 
   const makeMove = (from: string, to: string) => {
     const turn = game.turn();
@@ -82,34 +93,24 @@ export default function ChessGame() {
       />
 
       {gameOverMessage && (
-        <div
-          style={{
-            marginTop: 20,
-            padding: 20,
-            backgroundColor: "#222",
-            color: "#fff",
-            textAlign: "center",
-            borderRadius: 8,
-          }}
-        >
+        <div style={{ marginTop: 20, padding: 20, backgroundColor: "#222", color: "#fff", textAlign: "center", borderRadius: 8 }}>
           <h3>{gameOverMessage}</h3>
+
+          {revealedAdvantages && (
+            <>
+              <p><strong>Your Advantage:</strong> {color === "white" ? revealedAdvantages.whiteAdvantage?.name : revealedAdvantages.blackAdvantage?.name}</p>
+              <p><strong>Opponent's Advantage:</strong> {color === "white" ? revealedAdvantages.blackAdvantage?.name : revealedAdvantages.whiteAdvantage?.name}</p>
+            </>
+          )}
+
           <button
             onClick={() => window.location.reload()}
-            style={{
-              marginTop: 10,
-              padding: "8px 16px",
-              fontSize: "1rem",
-              borderRadius: 6,
-              backgroundColor: "#fff",
-              color: "#000",
-              border: "none",
-              cursor: "pointer",
-            }}
+            style={{ marginTop: 10, padding: "8px 16px", fontSize: "1rem", borderRadius: 6, backgroundColor: "#fff", color: "#000", border: "none", cursor: "pointer" }}
           >
             Play Again
           </button>
-    </div>
-    )}
+        </div>
+      )}
   </div>
   );
 }

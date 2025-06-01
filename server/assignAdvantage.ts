@@ -1,4 +1,5 @@
-import { ADVANTAGE_POOL, Advantage } from "./advantages";
+import { ADVANTAGE_POOL } from "./advantages";
+import type { Advantage } from "../shared/types";
 
 const RARITY_WEIGHTS: Record<"common" | "rare" | "legendary", number> = {
   common: 70,
@@ -25,3 +26,5 @@ export function assignRandomAdvantage(): Advantage {
 
   return weightedRandom(weightedPool, weights);
 }
+
+export { RARITY_WEIGHTS };

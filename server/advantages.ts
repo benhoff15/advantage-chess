@@ -1,11 +1,4 @@
-export type Rarity = "common" | "rare" | "legendary";
-
-export interface Advantage {
-  id: string;
-  name: string;
-  description: string;
-  rarity: Rarity;
-}
+import type { Advantage } from "../shared/types";
 
 export const ADVANTAGE_POOL: Advantage[] = [
   // 🔹 Common (70%)
