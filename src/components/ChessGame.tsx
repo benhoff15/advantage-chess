@@ -30,220 +30,6 @@ export default function ChessGame() {
   const [myAdvantage, setMyAdvantage] = useState<Advantage | null>(null);
   const [myShieldedPieceInfo, setMyShieldedPieceInfo] = useState<ShieldedPieceInfo | null>(null); // Added
   const fenSnapshotBeforeMove = useRef<string>(game.fen()); // For reverting deflected moves
-
-  useEffect(() => {
-    if (!roomId) return;
-
-    console.log("Joining room:", roomId);
-    socket.emit("joinRoom", roomId);
-
-    socket.on("colorAssigned", (assignedColor: "white" | "black") => {
-      setColor(assignedColor);
-    });
-
-    socket.on("opponentJoined", () => {
-      setOpponentConnected(true);
-    });
-
-    socket.on("opponentDisconnected", () => {
-      setOpponentConnected(false);
-      alert("Your opponent has disconnected.");
-    });
-
-    // Type for the raw move data part of the payload
-    type ServerMovePayload = {
-      from: string;
-      to: string;
-      special?: string;
-      color?: "white" | "black";
-      rookFrom?: string;
-      rookTo?: string;
-      promotion?: string;
-    };
-
-    // Type for the entire event data for "receiveMove"
-    type ReceiveMoveEventData = {
-      move: ServerMovePayload;
-      updatedShieldedPiece?: ShieldedPieceInfo;
-    };
-
-    socket.on("receiveMove", (data: ReceiveMoveEventData) => {
-      const receivedMove = data.move;
-      const updatedShieldedPiece = data.updatedShieldedPiece;
-
-      console.log("[ChessGame] Received move from server:", receivedMove);
-      if (updatedShieldedPiece) {
-        console.log("[ChessGame] With updatedShieldedPiece:", updatedShieldedPiece);
-      }
-
-      // Check if the move is an echo of the client's own move
-      if (receivedMove.color === color) {
-        console.log("[ChessGame] Received an echo of my own move. Processing potential state updates only.");
-        // If it's my own move, the local game state should already be updated by makeMove.
-        // We only need to process potential state updates from the server, like for shielded pieces.
-        if (updatedShieldedPiece) {
-          if (myShieldedPieceInfo && updatedShieldedPiece.id === myShieldedPieceInfo.id) {
-            console.log(`[ChessGame] Updating myShieldedPieceInfo (echo) from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPiece.currentSquare}`);
-            setMyShieldedPieceInfo(updatedShieldedPiece);
-          }
-          // (Future: Handle opponent's shielded piece updates if necessary)
-        }
-        // Do not re-apply the move or set FEN here, as makeMove already did.
-        return; // Skip further processing for echoed moves to prevent re-application.
-      }
-
-      // If it's not an echo (i.e., it's the opponent's move), proceed with applying it:
-      let moveSuccessfullyApplied = false;
-
-      if (receivedMove.special?.startsWith("castle-master")) {
-        const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
-        if (gameChanged) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
-        } else {
-          console.error("Failed to apply opponent's Castle Master move. FEN might be desynced.");
-        }
-      } else if (receivedMove.special === "pawn_rush_manual") {
-        const gameChanged = applyPawnRushOpponentMove({ game, receivedMove });
-        if (gameChanged) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
-        } else {
-          console.error("Failed to apply opponent's Pawn Rush move. FEN might be desynced.");
-        }
-      } else if (receivedMove.special === "focused_bishop") {
-        const gameChanged = applyFocusedBishopOpponentMove({
-          game,
-          receivedMove: receivedMove as OpponentFocusedBishopMove,
-        });
-        if (gameChanged) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
-        } else {
-          console.error("Failed to apply opponent's Focused Bishop move. FEN might be desynced.");
-        }
-      } else if (receivedMove.special === "corner_blitz") {
-        const gameChanged = applyCornerBlitzOpponentMove({
-          game,
-          receivedMove: receivedMove as any,
-        });
-        if (gameChanged) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
-        } else {
-          console.error("Failed to apply opponent's Corner Blitz move. FEN might be desynced.");
-        }
-      } else {
-        const standardMove = game.move({
-          from: receivedMove.from,
-          to: receivedMove.to,
-          promotion: receivedMove.promotion ? (receivedMove.promotion as any) : undefined,
-        });
-
-        if (standardMove) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
-        } else {
-          console.error(
-            `[ChessGame] Standard game.move() failed for received move. ` +
-            `This should not happen if server validated. Move: ${JSON.stringify(receivedMove)}. Current FEN: ${game.fen()}`
-          );
-        }
-      }
-
-      if (moveSuccessfullyApplied) {
-        // After move application and FEN update:
-        if (updatedShieldedPiece) {
-          if (myShieldedPieceInfo && updatedShieldedPiece.id === myShieldedPieceInfo.id) {
-            console.log(`[ChessGame] Updating myShieldedPieceInfo.currentSquare from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPiece.currentSquare}`);
-            setMyShieldedPieceInfo(updatedShieldedPiece);
-          }
-          // Placeholder for opponent's shielded piece update
-          // else if (opponentShieldedPieceInfo && updatedShieldedPiece.id === opponentShieldedPiece.id) {
-          //   setOpponentShieldedPieceInfo(updatedShieldedPiece);
-          // }
-        }
-
-        // Check game over states
-        if (game.isCheckmate()) {
-          const winner = game.turn() === "w" ? "black" : "white";
-          setGameOverMessage(`${winner} wins by checkmate`);
-        } else if (game.isDraw()) {
-          setGameOverMessage("Draw");
-        } else if (game.isStalemate()) {
-          setGameOverMessage("Draw by Stalemate");
-        } else if (game.isThreefoldRepetition()) {
-          setGameOverMessage("Draw by Threefold Repetition");
-        } else if (game.isInsufficientMaterial()) {
-          setGameOverMessage("Draw by Insufficient Material");
-        }
-      }
-    });
-
-
-    socket.on("revealAdvantages", (data: {
-      whiteAdvantage?: Advantage;
-      blackAdvantage?: Advantage;
-      winnerColor?: "white" | "black" | null;
-    }) => {
-      setRevealedAdvantages(data);
-    });
-
-    const handleAdvantageAssigned = (data: { advantage: Advantage, shieldedPiece?: ShieldedPieceInfo }) => {
-      setMyAdvantage(data.advantage);
-      console.log("Advantage assigned:", data.advantage);
-      if (data.shieldedPiece) {
-        setMyShieldedPieceInfo(data.shieldedPiece);
-        // Debug log for the player's own shielded piece
-        if (data.advantage.id === "silent_shield") {
-          console.log(
-            `SILENT SHIELD: Your ${data.shieldedPiece.type.toUpperCase()} on ${data.shieldedPiece.initialSquare} is protected for the entire game.`
-          );
-        }
-      }
-    };
-
-    socket.on("advantageAssigned", handleAdvantageAssigned);
-
-    const handleMoveDeflected = (data?: { move?: any }) => {
-      console.log("Move deflected by server:", data?.move);
-      alert("Your move was deflected by the opponent's Auto Deflect advantage!");
-      try {
-        game.load(fenSnapshotBeforeMove.current);
-        setFen(game.fen());
-      } catch (e) {
-        console.error("Error loading snapshot after move deflection:", e);
-        // Potentially ask for a full FEN sync from server if game state is corrupt
-      }
-    };
-    socket.on("moveDeflected", handleMoveDeflected);
-
-    const handleInvalidMove = (data: { message: string, move?: any }) => {
-      console.warn("Invalid move received from server:", data.move, "Reason:", data.message);
-      alert(`Invalid Move: ${data.message}`);
-      try {
-        game.load(fenSnapshotBeforeMove.current);
-        setFen(game.fen());
-        console.log("Game state reverted to FEN:", fenSnapshotBeforeMove.current);
-      } catch (e) {
-        console.error("Error loading snapshot after invalid move:", e);
-        // Consider requesting a full FEN sync from the server if the game state is potentially corrupt
-      }
-    };
-    socket.on("invalidMove", handleInvalidMove);
-
-    return () => {
-      socket.off("colorAssigned");
-      socket.off("opponentJoined");
-      socket.off("opponentDisconnected");
-      socket.off("receiveMove");
-      socket.off("revealAdvantages");
-      socket.off("advantageAssigned", handleAdvantageAssigned);
-      socket.off("moveDeflected", handleMoveDeflected);
-      socket.off("invalidMove", handleInvalidMove);
-    };
-  }, [roomId, game]); // Added game to dependency array
-
   const [revealedAdvantages, setRevealedAdvantages] = useState<{
     whiteAdvantage?: Advantage;
     blackAdvantage?: Advantage;
@@ -256,6 +42,225 @@ export default function ChessGame() {
     a1: false, h1: false, a8: false, h8: false 
   });
 
+  useEffect(() => {
+    if (!roomId) return;
+
+    console.log(`[ChessGame useEffect] Setting up for room: ${roomId}, color: ${color}`);
+    socket.emit("joinRoom", roomId);
+
+    const handleColorAssigned = (assignedColor: "white" | "black") => {
+      console.log(`[ChessGame event] colorAssigned: ${assignedColor}`);
+      setColor(assignedColor);
+    };
+    socket.on("colorAssigned", handleColorAssigned);
+
+    const handleOpponentJoined = () => {
+      console.log("[ChessGame event] opponentJoined");
+      setOpponentConnected(true);
+    };
+    socket.on("opponentJoined", handleOpponentJoined);
+
+    const handleOpponentDisconnected = () => {
+      console.log("[ChessGame event] opponentDisconnected");
+      setOpponentConnected(false);
+      alert("Your opponent has disconnected.");
+    };
+    socket.on("opponentDisconnected", handleOpponentDisconnected);
+
+    type ServerMovePayload = {
+      from: string; to: string; special?: string; color?: "white" | "black";
+      rookFrom?: string; rookTo?: string; promotion?: string;
+    };
+    type ReceiveMoveEventData = {
+      move: ServerMovePayload; updatedShieldedPiece?: ShieldedPieceInfo;
+    };
+
+    const handleReceiveMove = (data: ReceiveMoveEventData) => {
+      const receivedMove = data.move;
+      const updatedShieldedPieceFromServer = data.updatedShieldedPiece;
+
+      console.log(`[ChessGame handleReceiveMove] START. Current color state: ${color}. Received move:`, receivedMove);
+      if (updatedShieldedPieceFromServer) {
+        console.log("[ChessGame handleReceiveMove] Server sent updatedShieldedPiece:", updatedShieldedPieceFromServer);
+      }
+
+      const isEcho = receivedMove.color === color;
+
+      if (isEcho) {
+        console.log("[ChessGame handleReceiveMove] Detected ECHO of my own move.");
+        // Process potential state updates for echo (e.g. Silent Shield update after own move)
+        if (updatedShieldedPieceFromServer && myShieldedPieceInfo && updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id) {
+          console.log(`[ChessGame handleReceiveMove ECHO] Updating myShieldedPieceInfo from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`);
+          setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
+        }
+        console.log("[ChessGame handleReceiveMove ECHO] Processing complete. Returning.");
+        return; 
+      }
+
+      console.log(`[ChessGame handleReceiveMove] Processing OPPONENT's move: ${JSON.stringify(receivedMove)}`);
+      let moveSuccessfullyApplied = false;
+      const currentFenBeforeOpponentMove = game.fen(); 
+
+      if (receivedMove.special?.startsWith("castle-master")) {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Castle Master.");
+        const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Castle Master move.");
+        }
+      } else if (receivedMove.special === "pawn_rush_manual") {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Pawn Rush.");
+        const gameChanged = applyPawnRushOpponentMove({ game, receivedMove });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Pawn Rush move.");
+        }
+      } else if (receivedMove.special === "focused_bishop") {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Focused Bishop.");
+        const gameChanged = applyFocusedBishopOpponentMove({
+          game,
+          receivedMove: receivedMove as OpponentFocusedBishopMove,
+        });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Focused Bishop move.");
+        }
+      } else if (receivedMove.special === "corner_blitz") {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Corner Blitz.");
+        const gameChanged = applyCornerBlitzOpponentMove({
+          game,
+          receivedMove: receivedMove as any, 
+        });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Corner Blitz move.");
+        }
+      } else {
+        console.log(`[ChessGame handleReceiveMove] Attempting to apply opponent's STANDARD move: ${JSON.stringify(receivedMove)} on FEN: ${currentFenBeforeOpponentMove}`);
+        const standardMove = game.move({
+          from: receivedMove.from,
+          to: receivedMove.to,
+          promotion: receivedMove.promotion ? (receivedMove.promotion as any) : undefined,
+        });
+
+        if (standardMove) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+          console.log(`[ChessGame handleReceiveMove] Opponent's standard move applied. New FEN: ${game.fen()}`);
+        } else {
+          console.error(
+            `[ChessGame handleReceiveMove] Standard game.move() FAILED for opponent's received move. ` +
+            `Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}. Game history: ${JSON.stringify(game.history({verbose: true}))}`
+          );
+        }
+      }
+
+      if (moveSuccessfullyApplied) {
+        console.log("[ChessGame handleReceiveMove] Opponent's move successfully applied. Updating state.");
+        if (updatedShieldedPieceFromServer) {
+          // This logic might be for when the opponent's move affects *my* shielded piece,
+          // or if we were tracking the opponent's shielded piece.
+          // For now, only updating if it's my piece.
+          if (myShieldedPieceInfo && updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id) {
+             console.log(`[ChessGame handleReceiveMove] Updating myShieldedPieceInfo (opponent move context) from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`);
+             setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
+          }
+          // else if (opponentShieldedPieceInfo && updatedShieldedPieceFromServer.id === opponentShieldedPieceInfo.id) {
+          //   setOpponentShieldedPieceInfo(updatedShieldedPieceFromServer); // If tracking opponent's shield
+          // }
+        }
+
+        if (game.isCheckmate()) {
+          const winner = game.turn() === "w" ? "black" : "white";
+          setGameOverMessage(`${winner} wins by checkmate`);
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+        } else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+        } else if (game.isThreefoldRepetition()) {
+          setGameOverMessage("Draw by Threefold Repetition");
+        } else if (game.isInsufficientMaterial()) {
+          setGameOverMessage("Draw by Insufficient Material");
+        }
+      } else {
+        console.warn("[ChessGame handleReceiveMove] Opponent's move was NOT successfully applied. State may be inconsistent.");
+      }
+      console.log("[ChessGame handleReceiveMove] END.");
+    };
+    socket.on("receiveMove", handleReceiveMove);
+
+    const handleRevealAdvantages = (data: {
+        whiteAdvantage?: Advantage;
+        blackAdvantage?: Advantage;
+        winnerColor?: "white" | "black" | null;
+      }) => {
+      console.log("[ChessGame event] revealAdvantages:", data);
+      setRevealedAdvantages(data);
+    };
+    socket.on("revealAdvantages", handleRevealAdvantages);
+
+    const handleAdvantageAssigned = (data: { advantage: Advantage, shieldedPiece?: ShieldedPieceInfo }) => {
+      console.log("[ChessGame event] advantageAssigned:", data);
+      setMyAdvantage(data.advantage);
+      if (data.shieldedPiece) {
+        setMyShieldedPieceInfo(data.shieldedPiece);
+        if (data.advantage.id === "silent_shield") {
+          console.log(`SILENT SHIELD: Your ${data.shieldedPiece.type.toUpperCase()} on ${data.shieldedPiece.initialSquare} is protected.`);
+        }
+      }
+    };
+    socket.on("advantageAssigned", handleAdvantageAssigned);
+
+    const handleMoveDeflected = (data?: { move?: any }) => {
+      console.log("[ChessGame event] moveDeflected:", data?.move);
+      alert("Your move was deflected by the opponent's Auto Deflect advantage!");
+      try {
+        game.load(fenSnapshotBeforeMove.current);
+        setFen(game.fen());
+      } catch (e) {
+        console.error("Error loading snapshot after move deflection:", e);
+      }
+    };
+    socket.on("moveDeflected", handleMoveDeflected);
+
+    const handleInvalidMove = (data: { message: string, move?: any }) => {
+      console.warn("[ChessGame event] invalidMove:", data.move, "Reason:", data.message);
+      alert(`Invalid Move: ${data.message}`);
+      try {
+        game.load(fenSnapshotBeforeMove.current);
+        setFen(game.fen());
+        console.log("Game state reverted to FEN:", fenSnapshotBeforeMove.current);
+      } catch (e) {
+        console.error("Error loading snapshot after invalid move:", e);
+      }
+    };
+    socket.on("invalidMove", handleInvalidMove);
+
+    return () => {
+      console.log(`[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`);
+      socket.off("colorAssigned", handleColorAssigned);
+      socket.off("opponentJoined", handleOpponentJoined);
+      socket.off("opponentDisconnected", handleOpponentDisconnected);
+      socket.off("receiveMove", handleReceiveMove); 
+      socket.off("revealAdvantages", handleRevealAdvantages);
+      socket.off("advantageAssigned", handleAdvantageAssigned);
+      socket.off("moveDeflected", handleMoveDeflected);
+      socket.off("invalidMove", handleInvalidMove);
+    };
+  }, [roomId, game, color, myAdvantage, myShieldedPieceInfo, fenSnapshotBeforeMove]);
+  // Note: `game` (useState object) and `fenSnapshotBeforeMove` (ref object) are stable.
+  // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
+  // handleAdvantageAssigned, and the logging in cleanup depend on their current values.
+
+  // const [revealedAdvantages, setRevealedAdvantages] = useState<{
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
 

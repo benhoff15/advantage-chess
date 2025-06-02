@@ -2,7 +2,7 @@ import type { Advantage } from "../shared/types";
 
 export const ADVANTAGE_POOL: Advantage[] = [
   // Common (70%)
-  { id: "silent_shield", name: "Silent Shield", description: "One random piece (excluding king) cannot be captured.", rarity: "common" },
+  { id: "silent_shield", name: "Silent Shield", description: "One random piece (excluding king) cannot be captured.", rarity: "common" }, // done
   { id: "pawn_rush", name: "Pawn Rush", description: "All your pawns can move 2 squares at any time.", rarity: "common" }, // done
   { id: "castle_master", name: "Castle Master", description: "You may castle even if the king or rook has moved once.", rarity: "common" }, // done
   { id: "auto_deflect", name: "Auto-Deflect", description: "Your king cannot be checked by knights.", rarity: "common" }, // done
