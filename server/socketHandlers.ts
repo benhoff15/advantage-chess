@@ -2,8 +2,22 @@ import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
 import { Advantage } from "../shared/types";
+import { handlePawnRush } from "./logic/advantages/pawnRush";
+import { handleCastleMaster } from "./logic/advantages/castleMaster";
+import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
 
 console.log("✅ setupSocketHandlers loaded");
+
+// Module-level definition for ClientMovePayload
+type ClientMovePayload = {
+  from: string;
+  to: string;
+  special?: string;
+  color?: 'white' | 'black'; // color is optional and can be 'white' or 'black'
+  rookFrom?: string;
+  rookTo?: string;
+  promotion?: string;
+};
 
 type PlayerStats = {
   gamesPlayed: number;
@@ -70,12 +84,11 @@ export function setupSocketHandlers(io: Server) {
       console.log(`🔌 ${socket.id} is joining room ${roomId}`);
       
       if (!rooms[roomId]) {
-        // Initialize room with starting FEN when the first player joins
         rooms[roomId] = { fen: new Chess().fen() };
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen}`);
       }
       
-      const room = rooms[roomId]; // room will exist here
+      const room = rooms[roomId]; 
 
       if (!room.white) {
         room.white = socket.id;
@@ -89,7 +102,6 @@ export function setupSocketHandlers(io: Server) {
         socket.emit("colorAssigned", "black");
         socket.emit("advantageAssigned", room.blackAdvantage);
         console.log(`⚫ Assigned ${socket.id} as black with advantage: ${room.blackAdvantage.name}`);
-      
         io.to(roomId).emit("opponentJoined");
       } else {
         socket.emit("roomFull");
@@ -98,7 +110,6 @@ export function setupSocketHandlers(io: Server) {
       }
       console.log(`✅ Room state:`, rooms[roomId]);
 
-      // Server-side move validation and Auto-Deflect logic
       socket.on("sendMove", ({ roomId, move: clientMoveData }) => {
         const room = rooms[roomId];
         if (!room || !room.fen || !room.white || !room.black) {
@@ -110,18 +121,15 @@ export function setupSocketHandlers(io: Server) {
         const serverGame = new Chess(room.fen);
         const senderId = socket.id;
         let senderColor: "white" | "black" | null = null;
-        // let opponentId: string | null = null; // Not strictly needed for this logic
         let opponentColor: "white" | "black" | null = null;
         let opponentAdvantage: Advantage | undefined;
 
         if (senderId === room.white) {
           senderColor = "white";
-          // opponentId = room.black;
           opponentColor = "black";
           opponentAdvantage = room.blackAdvantage;
         } else if (senderId === room.black) {
           senderColor = "black";
-          // opponentId = room.white;
           opponentColor = "white";
           opponentAdvantage = room.whiteAdvantage;
         } else {
@@ -136,126 +144,53 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
         
-        let moveResult: Move | null = null; // Use chess.js Move type
-        let resultFen = room.fen; // Store the FEN after the move is applied on serverGame
+        let moveResult: Move | null = null; 
+        let resultFen = room.fen; 
 
-        // Type for incoming move data (matches client's special move structure)
-        type ClientMovePayload = {
-            from: string; to: string; special?: string; color?: string; 
-            rookFrom?: string; rookTo?: string; promotion?: string;
-        };
+        // clientMoveData is initially 'unknown' or 'any' from socket.io
+        // Cast it to our defined ClientMovePayload type
         const receivedMove = clientMoveData as ClientMovePayload;
 
+        // TEST: Verify Castle Master server-side logic (king/rook moved, path clear/blocked, in check, through attacked squares).
         if (receivedMove.special?.startsWith("castle-master")) {
-          if (!receivedMove.color || !receivedMove.rookFrom || !receivedMove.rookTo || receivedMove.color !== senderColor) {
-            console.error(`[sendMove] Invalid Castle Master move received from ${senderId}, missing/mismatched data:`, receivedMove);
-            socket.emit("invalidMove", { message: "Invalid Castle Master data.", move: clientMoveData });
+          if (senderColor === null) { 
+            console.error(`[sendMove] senderColor is null before calling handleCastleMaster for room ${roomId}.`);
+            socket.emit("serverError", { message: "Internal server error processing your move." });
             return;
           }
-          const castlingPlayerChessJsColor = receivedMove.color === "white" ? "w" : "b";
-
-          // (Assuming client-side canCastle checks were sufficient for validity regarding paths/check states)
-          serverGame.remove(receivedMove.from as any);
-          serverGame.remove(receivedMove.rookFrom as any);
-          serverGame.put({ type: "k", color: castlingPlayerChessJsColor }, receivedMove.to as any);
-          serverGame.put({ type: "r", color: castlingPlayerChessJsColor }, receivedMove.rookTo as any);
-
-          let fenParts = serverGame.fen().split(" ");
-          fenParts[0] = serverGame.board().map(rank => {
-            let empty = 0; let fenRow = "";
-            rank.forEach(sq => {
-              if (sq === null) { empty++; } 
-              else {
-                if (empty > 0) { fenRow += empty; empty = 0; }
-                fenRow += sq.color === 'w' ? sq.type.toUpperCase() : sq.type.toLowerCase();
-              }
-            });
-            if (empty > 0) fenRow += empty;
-            return fenRow;
-          }).join('/');
-          fenParts[1] = (receivedMove.color === "white") ? "b" : "w";
-          let currentCastlingRights = fenParts[2];
-          if (receivedMove.color === "white") currentCastlingRights = currentCastlingRights.replace("K", "").replace("Q", "");
-          else currentCastlingRights = currentCastlingRights.replace("k", "").replace("q", "");
-          if (currentCastlingRights === "") currentCastlingRights = "-";
-          fenParts[2] = currentCastlingRights;
-          fenParts[3] = "-"; 
-          fenParts[4] = "0"; 
-          const currentFullMove = parseInt(fenParts[5], 10);
-          if (receivedMove.color === "black") fenParts[5] = (currentFullMove + 1).toString();
-          
-          const nextFen = fenParts.join(" ");
-          try {
-            serverGame.load(nextFen);
-            if (serverGame.fen() !== nextFen) {
-              console.warn(`[sendMove] Castle Master FEN mismatch on server for room ${roomId}: "${serverGame.fen()}" vs "${nextFen}". Using loaded FEN.`);
-            }
-            // Simulate a moveResult for history/deflection check
-            moveResult = { 
-              piece: 'k', flags: 'c', // 'c' for castle, though chess.js uses 'k'/'q'
-              from: receivedMove.from as any, to: receivedMove.to as any,
-              color: castlingPlayerChessJsColor,
-              san: receivedMove.to === 'g1' || receivedMove.to === 'g8' ? 'O-O' : 'O-O-O', // Approximate SAN
-            } as Move;
-            resultFen = serverGame.fen();
-          } catch (e) {
-            console.error(`[sendMove] Error loading FEN for Castle Master on server, room ${roomId}:`, e, `FEN: ${nextFen}`);
-            socket.emit("invalidMove", { message: "Server error processing Castle Master FEN.", move: clientMoveData });
+          const castleMasterResult = handleCastleMaster({
+            game: serverGame,
+            clientMoveData: receivedMove as any, // handleCastleMaster has specific type with required color, rookFrom, rookTo
+            currentFen: room.fen,
+            playerColor: senderColor[0] as 'w' | 'b',
+          });
+          moveResult = castleMasterResult.moveResult;
+          resultFen = castleMasterResult.nextFen;
+          if (!moveResult) {
+             socket.emit("invalidMove", { message: "Invalid Castle Master move or server error.", move: clientMoveData });
             return;
           }
         } else if (receivedMove.special === "pawn_rush_manual") {
-          if (!receivedMove.from || !receivedMove.to || !receivedMove.color || receivedMove.color !== senderColor) {
-            console.error(`[sendMove] Invalid Pawn Rush Manual move received from ${senderId}, missing/mismatched data:`, receivedMove);
-            socket.emit("invalidMove", { message: "Invalid Pawn Rush Manual data.", move: clientMoveData });
+          // TEST: Verify Pawn Rush server-side logic with various pawn moves.
+          if (senderColor === null) { 
+            console.error(`[sendMove] senderColor is null before calling handlePawnRush for room ${roomId}. This should not happen.`);
+            socket.emit("serverError", { message: "Internal server error processing your move." });
             return;
           }
-          const pawnChessJsColor = receivedMove.color === "white" ? "w" : "b";
-
-          // (Assuming client-side path clear checks were sufficient)
-          serverGame.remove(receivedMove.from as any);
-          serverGame.put({ type: 'p', color: pawnChessJsColor }, receivedMove.to as any);
-
-          let fenParts = serverGame.fen().split(" ");
-          fenParts[0] = serverGame.board().map(rank => { // FEN row logic (same as Castle Master)
-            let empty = 0; let fenRow = "";
-            rank.forEach(sq => {
-              if (sq === null) { empty++; } 
-              else {
-                if (empty > 0) { fenRow += empty; empty = 0; }
-                fenRow += sq.color === 'w' ? sq.type.toUpperCase() : sq.type.toLowerCase();
-              }
-            });
-            if (empty > 0) fenRow += empty;
-            return fenRow;
-          }).join('/');
-          
-          fenParts[1] = (receivedMove.color === "white") ? "b" : "w"; // Toggle turn
-          // fenParts[2] (castling rights) are preserved from current serverGame.fen()
-          fenParts[3] = "-"; // En passant square
-          fenParts[4] = "0"; // Halfmove clock
-          
-          const currentFullMove = parseInt(fenParts[5], 10);
-          if (receivedMove.color === "black") {
-            fenParts[5] = (currentFullMove + 1).toString();
-          }
-          
-          const nextFen = fenParts.join(" ");
-          try {
-            serverGame.load(nextFen);
-            if (serverGame.fen() !== nextFen) {
-              console.warn(`[sendMove] Pawn Rush Manual FEN mismatch on server for room ${roomId}: "${serverGame.fen()}" vs "${nextFen}". Using loaded FEN.`);
-            }
-            moveResult = {
-              piece: 'p', flags: 'b', // 'b' for two-square push
-              from: receivedMove.from as any, to: receivedMove.to as any,
-              color: pawnChessJsColor,
-              san: `${receivedMove.to}` // Simplified SAN
-            } as Move;
-            resultFen = serverGame.fen();
-          } catch (e) {
-            console.error(`[sendMove] Error loading FEN for Pawn Rush Manual on server, room ${roomId}:`, e, `FEN: ${nextFen}`);
-            socket.emit("invalidMove", { message: "Server error processing Pawn Rush Manual FEN.", move: clientMoveData });
-            return;
+          // handlePawnRush expects clientMoveData.color to be defined. 
+          // The ClientMovePayload type has color as optional.
+          // The handlePawnRush function itself checks if clientMoveData.color is present.
+          const pawnRushResult = handlePawnRush({
+            game: serverGame, 
+            clientMoveData: receivedMove, // Pass receivedMove directly
+            currentFen: room.fen, 
+            playerColor: senderColor[0] as 'w' | 'b', 
+          });
+          moveResult = pawnRushResult.moveResult;
+          resultFen = pawnRushResult.nextFen; 
+          if (!moveResult) {
+            socket.emit("invalidMove", { message: "Invalid Pawn Rush Manual move.", move: clientMoveData });
+            return; 
           }
         } else {
           moveResult = serverGame.move({ 
@@ -274,21 +209,20 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
 
-        let isDeflected = false;
-        if (opponentAdvantage?.id === "auto_deflect") {
-          // The moveResult is from the perspective of the sender.
-          // serverGame.inCheck() now refers to whether the *opponent* (receiver of the move) is in check.
-          if (moveResult.piece === 'n' && serverGame.inCheck()) {
-            isDeflected = true;
-            console.log(`[sendMove] Knight move by ${senderColor} deflected for ${opponentColor} in room ${roomId}.`);
-            socket.emit("moveDeflected", { move: clientMoveData }); 
-          }
-        }
+        // TEST: Verify Auto Deflect server-side logic (knight moves, resulting in check/no check for opponent).
+        const isDeflected = handleAutoDeflect({
+          game: serverGame, 
+          moveResult: moveResult, 
+          opponentAdvantage: opponentAdvantage,
+        });
 
-        if (!isDeflected) {
-          room.fen = resultFen; // Update server's FEN state for the room
+        if (isDeflected) {
+          console.log(`[sendMove] Knight move by ${senderColor} deflected by ${opponentColor}'s Auto Deflect in room ${roomId}.`);
+          socket.emit("moveDeflected", { move: clientMoveData }); 
+        } else {
+          room.fen = resultFen; 
           console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
-          socket.to(roomId).emit("receiveMove", clientMoveData); // Broadcast the original client move data
+          socket.to(roomId).emit("receiveMove", clientMoveData); 
         }
       });
     });
@@ -303,19 +237,15 @@ export function setupSocketHandlers(io: Server) {
           socket.to(roomId).emit("opponentDisconnected");
         }
       }
-
       console.log("🔴 Disconnected:", socket.id);
     });
 
     socket.on("gameOver", ({ roomId, winnerColor }) => {
       const room = rooms[roomId];
       if (!room?.white || !room?.black) return;
-
       const winnerId = winnerColor === "white" ? room.white : room.black;
       const loserId = winnerColor === "white" ? room.black : room.white;
-
       updateElo(winnerId, loserId);
-
       io.to(roomId).emit("revealAdvantages", {
         whiteAdvantage: room.whiteAdvantage,
         blackAdvantage: room.blackAdvantage,
@@ -326,9 +256,7 @@ export function setupSocketHandlers(io: Server) {
     socket.on("gameDraw", ({ roomId }) => {
       const room = rooms[roomId];
       if (!room?.white || !room?.black) return;
-
       updateElo(room.white, room.black, true);
-
       io.to(roomId).emit("revealAdvantages", {
         whiteAdvantage: room.whiteAdvantage,
         blackAdvantage: room.blackAdvantage,
