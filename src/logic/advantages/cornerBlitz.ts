@@ -104,7 +104,7 @@ export function handleCornerBlitzClient({
   console.log(`[CornerBlitzClient] FEN before local update: ${snapshot}`);
 
   game.remove(fromSq);
-  game.remove(pawnSquareToJump);
+  // game.remove(pawnSquareToJump);
   game.put({ type: 'r', color: playerChessJsColor }, toSq);
 
   let fenParts = game.fen().split(' '); 
@@ -205,7 +205,7 @@ export function applyCornerBlitzOpponentMove({
       console.error(`[CornerBlitzOpponent] Expected opponent pawn at ${jumpedPawnSquare} but found:`, pawnBeingJumped, `Skipping its removal. FEN: ${game.fen()}`);
       game.load(snapshot); return false; 
   }
-  game.remove(jumpedPawnSquare); 
+  // game.remove(jumpedPawnSquare); 
   game.put({ type: 'r', color: opponentChessJsColor }, toSq);
 
   let fenParts = game.fen().split(' ');

@@ -178,6 +178,20 @@ export default function ChessGame() {
     };
     socket.on("moveDeflected", handleMoveDeflected);
 
+    const handleInvalidMove = (data: { message: string, move?: any }) => {
+      console.warn("Invalid move received from server:", data.move, "Reason:", data.message);
+      alert(`Invalid Move: ${data.message}`);
+      try {
+        game.load(fenSnapshotBeforeMove.current);
+        setFen(game.fen());
+        console.log("Game state reverted to FEN:", fenSnapshotBeforeMove.current);
+      } catch (e) {
+        console.error("Error loading snapshot after invalid move:", e);
+        // Consider requesting a full FEN sync from the server if the game state is potentially corrupt
+      }
+    };
+    socket.on("invalidMove", handleInvalidMove);
+
     return () => {
       socket.off("colorAssigned");
       socket.off("opponentJoined");
@@ -186,6 +200,7 @@ export default function ChessGame() {
       socket.off("revealAdvantages");
       socket.off("advantageAssigned", handleAdvantageAssigned);
       socket.off("moveDeflected", handleMoveDeflected);
+      socket.off("invalidMove", handleInvalidMove);
     };
   }, [roomId, game]); // Added game to dependency array
 

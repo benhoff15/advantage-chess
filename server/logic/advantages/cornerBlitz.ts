@@ -115,7 +115,7 @@ export function handleCornerBlitzServer({
   // Perform operations, then if anything fails or FEN is bad, load(currentFen) to revert.
 
   game.remove(fromSq);             // Remove rook from starting square
-  game.remove(pawnSquareToJump);   // Remove the jumped friendly pawn
+  // game.remove(pawnSquareToJump);   // Remove the jumped friendly pawn
   
   // If 'toSq' had an opponent's piece, it's captured. chess.js 'put' handles this.
   game.put({ type: 'r', color: playerColor }, toSq); // Place rook on destination
