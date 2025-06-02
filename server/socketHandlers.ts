@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage } from "../shared/types";
+import { Advantage, ShieldedPieceInfo } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -14,6 +14,7 @@ import {
   handleCornerBlitzServer, 
   CornerBlitzAdvantageRookState 
 } from "./logic/advantages/cornerBlitz";
+import { selectProtectedPiece } from "./logic/advantages/silentShield";
 
 console.log("setupSocketHandlers loaded");
 
@@ -47,6 +48,10 @@ type RoomState = {
   blackFocusedBishopState?: FocusedBishopAdvantageState;
   whiteRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
   blackRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
+  silentShieldPieces?: {
+    white: ShieldedPieceInfo | null;
+    black: ShieldedPieceInfo | null;
+  };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -106,10 +111,14 @@ export function setupSocketHandlers(io: Server) {
           // Initialize other new states as needed
           whiteRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
           blackRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
+          silentShieldPieces: { white: null, black: null },
         };
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen} and default advantage states.`);
       } else {
         // If room exists but a player slot might be rejoining, ensure states are there
+        if (!rooms[roomId].silentShieldPieces) {
+          rooms[roomId].silentShieldPieces = { white: null, black: null };
+        }
         if (rooms[roomId].white) {
           if (!rooms[roomId].whiteFocusedBishopState) rooms[roomId].whiteFocusedBishopState = { focusedBishopUsed: false };
           if (!rooms[roomId].whiteRooksMoved) rooms[roomId].whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
@@ -126,15 +135,58 @@ export function setupSocketHandlers(io: Server) {
         room.white = socket.id;
         room.whiteAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "white");
-        socket.emit("advantageAssigned", room.whiteAdvantage); 
+        // socket.emit("advantageAssigned", room.whiteAdvantage); // Removed: Handled below
         console.log(`Assigned ${socket.id} as white with advantage: ${room.whiteAdvantage.name}`);
       } else if (!room.black) {
         room.black = socket.id;
         room.blackAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "black");
-        socket.emit("advantageAssigned", room.blackAdvantage);
+        // socket.emit("advantageAssigned", room.blackAdvantage); // Removed: Handled below
         console.log(`Assigned ${socket.id} as black with advantage: ${room.blackAdvantage.name}`);
-        io.to(roomId).emit("opponentJoined");
+        
+        // ---- START NEW LOGIC BLOCK ----
+        // This block runs when the second player (black) has just joined.
+        const initialGame = new Chess(); 
+
+        // White player's advantage processing
+        if (room.whiteAdvantage?.id === "silent_shield" && room.silentShieldPieces && room.white) {
+            const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
+            if (whiteShieldedPiece) {
+                room.silentShieldPieces.white = whiteShieldedPiece;
+                console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
+                const whiteSocket = io.sockets.sockets.get(room.white);
+                if (whiteSocket) {
+                    whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage, shieldedPiece: whiteShieldedPiece });
+                }
+            } else { // If no piece could be selected, emit advantage without shield info
+                const whiteSocket = io.sockets.sockets.get(room.white);
+                if (whiteSocket) {
+                    whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                }
+            }
+        } else if (room.whiteAdvantage && room.white) { // Standard advantage emission for white
+            const whiteSocket = io.sockets.sockets.get(room.white);
+            if (whiteSocket) {
+                whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+            }
+        }
+
+        // Black player's advantage processing (socket is black's socket here)
+        if (room.blackAdvantage?.id === "silent_shield" && room.silentShieldPieces) {
+            const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
+            if (blackShieldedPiece) {
+                room.silentShieldPieces.black = blackShieldedPiece;
+                console.log(`Black player (${room.black}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage, shieldedPiece: blackShieldedPiece });
+            } else { // If no piece could be selected, emit advantage without shield info
+                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+            }
+        } else if (room.blackAdvantage) { // Standard advantage emission for black
+            socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+        }
+        // ---- END NEW LOGIC BLOCK ----
+
+        io.to(roomId).emit("opponentJoined"); 
       } else {
         socket.emit("roomFull");
         console.log(`Room ${roomId} is full`);
@@ -205,10 +257,33 @@ export function setupSocketHandlers(io: Server) {
             if (!room.blackRooksMoved) room.blackRooksMoved = currentPlayerRooksMoved_CB;
         }
 
+        // ---- Start of Silent Shield Capture Prevention ----
+        const opponentShieldedPieceInfo: ShieldedPieceInfo | null =
+          room.silentShieldPieces && opponentColor ? room.silentShieldPieces[opponentColor] : null;
+
+        if (opponentShieldedPieceInfo) {
+          // The client is attempting to move to the square currently occupied by the opponent's shielded piece.
+          // This is an attempt to capture it.
+          if (receivedMove.to === opponentShieldedPieceInfo.currentSquare) {
+            // We also need to ensure there's actually a piece on that square for a capture to be possible.
+            // And that the piece belongs to the opponent.
+            const pieceOnTargetSquare = serverGame.get(receivedMove.to as any); // 'any' to satisfy chess.js Square type
+
+            if (pieceOnTargetSquare && pieceOnTargetSquare.color === opponentColor[0] && pieceOnTargetSquare.type === opponentShieldedPieceInfo.type) {
+              console.warn(`[sendMove] Player ${senderColor} (${senderId}) attempt to capture shielded piece ${opponentShieldedPieceInfo.type} at ${opponentShieldedPieceInfo.currentSquare} in room ${roomId}.`);
+              socket.emit("invalidMove", {
+                message: `Opponent's ${opponentShieldedPieceInfo.type.toUpperCase()} on ${opponentShieldedPieceInfo.currentSquare} is protected by Silent Shield.`,
+                move: receivedMove
+              });
+              return; // Stop further processing of this move
+            }
+          }
+        }
+        // ---- End of Silent Shield Capture Prevention ----
 
         if (receivedMove.special?.startsWith("castle-master")) {
           // Assumes handleCastleMaster sets moveResult and updates serverGame internally
-          if (senderColor === null) { 
+          if (senderColor === null) {
             console.error(`[sendMove] senderColor is null before calling handleCastleMaster for room ${roomId}.`);
             socket.emit("serverError", { message: "Internal server error processing your move." });
             return;
@@ -302,11 +377,21 @@ export function setupSocketHandlers(io: Server) {
           }
         } else { 
           // Standard move attempt
+          
+        try {
           moveResult = serverGame.move({ 
-              from: receivedMove.from, 
-              to: receivedMove.to, 
-              promotion: receivedMove.promotion as any 
+            from: receivedMove.from,
+            to: receivedMove.to,
+            promotion: receivedMove.promotion as any
           });
+      } catch (err) {
+        console.warn(`[sendMove] Chess.js threw an error on move attempt:`, err);
+        socket.emit("invalidMove", {
+          message: "Move rejected by chess engine (internal validation).",
+          move: clientMoveData
+        });
+        return;
+      }
 
           if (moveResult) {
             // Shield Wall Check - only if the standard move itself was valid
@@ -360,11 +445,35 @@ export function setupSocketHandlers(io: Server) {
                  room.fen = currentResultFen; // This should be fine if all handlers update serverGame.
             }
 
+            // ---- Start of Silent Shield currentSquare update ----
+            let updatedShieldedPieceForEmit: ShieldedPieceInfo | null = null;
+            if (room.silentShieldPieces && senderColor && moveResult) { // moveResult must be non-null here
+              const playerShieldInfo = room.silentShieldPieces[senderColor];
+              if (playerShieldInfo && moveResult.from === playerShieldInfo.currentSquare) {
+                playerShieldInfo.currentSquare = moveResult.to;
+                updatedShieldedPieceForEmit = playerShieldInfo;
+                console.log(`[SilentShield] Player ${senderColor}'s shielded piece ${playerShieldInfo.type} moved from ${moveResult.from} to ${moveResult.to}. Updated currentSquare.`);
+              }
+            }
+            // ---- End of Silent Shield currentSquare update ----
 
             console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
-            socket.to(roomId).emit("receiveMove", clientMoveData); 
+            
+            // Ensure the move data to be broadcast includes the sender's color
+            const moveDataForBroadcast: ClientMovePayload = {
+                ...clientMoveData, // Spread original client move data
+                color: senderColor! // Explicitly set/override color with server's authoritative senderColor
+                                   // The '!' asserts senderColor is not null here, which it should be.
+            };
+
+            const payload = {
+                move: moveDataForBroadcast, // Use the modified move data
+                ...(updatedShieldedPieceForEmit && { updatedShieldedPiece: updatedShieldedPieceForEmit })
+            };
+            io.to(roomId).emit("receiveMove", payload);
+
           }
-        } else { 
+        } else {
           // This block executes if moveResult is null.
           let message = "Your move was deemed invalid by the server (generic fallback).";
           // Attempt to provide a slightly more specific message if possible

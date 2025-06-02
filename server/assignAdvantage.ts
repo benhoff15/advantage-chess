@@ -30,10 +30,10 @@ const testSequence: Advantage[] = [
     rarity: "common"
   },
   { 
-    id: "shield_wall",
-    name: "Shield Wall",
-    description: "Your pawns cannot be captured during the first 5 moves.",
-    rarity: "common"
+    id: "silent_shield",
+    name: "Silent Shield",
+    description: "One random piece (excluding king) cannot be captured.",
+    rarity: "common" 
   }
 ];
 

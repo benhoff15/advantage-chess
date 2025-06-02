@@ -4,7 +4,8 @@ import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { Square } from "chess.js";
 import { socket } from "../socket";
-import { Advantage } from "../../shared/types";
+import { Advantage, ShieldedPieceInfo } from "../../shared/types";
+import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
 import { handlePawnRushClient, applyPawnRushOpponentMove } from "../logic/advantages/pawnRush";
 import { handleCastleMasterClient, applyCastleMasterOpponentMove } from "../logic/advantages/castleMaster";
 import { 
@@ -27,6 +28,7 @@ export default function ChessGame() {
   const [opponentConnected, setOpponentConnected] = useState(false);
   const [gameOverMessage, setGameOverMessage] = useState<string | null>(null);
   const [myAdvantage, setMyAdvantage] = useState<Advantage | null>(null);
+  const [myShieldedPieceInfo, setMyShieldedPieceInfo] = useState<ShieldedPieceInfo | null>(null); // Added
   const fenSnapshotBeforeMove = useRef<string>(game.fen()); // For reverting deflected moves
 
   useEffect(() => {
@@ -48,20 +50,50 @@ export default function ChessGame() {
       alert("Your opponent has disconnected.");
     });
 
-    type ReceivedMoveData = {
+    // Type for the raw move data part of the payload
+    type ServerMovePayload = {
       from: string;
       to: string;
       special?: string;
-      color?: "white" | "black"; // Color of the player who made the move
+      color?: "white" | "black";
       rookFrom?: string;
       rookTo?: string;
       promotion?: string;
     };
 
-    socket.on("receiveMove", (receivedMove: ReceivedMoveData) => {
-      console.log("[ChessGame] Received move from server:", receivedMove); // Log the raw received move
+    // Type for the entire event data for "receiveMove"
+    type ReceiveMoveEventData = {
+      move: ServerMovePayload;
+      updatedShieldedPiece?: ShieldedPieceInfo;
+    };
 
-      let moveSuccessfullyApplied = false; // Flag to track if any handler processed the move
+    socket.on("receiveMove", (data: ReceiveMoveEventData) => {
+      const receivedMove = data.move;
+      const updatedShieldedPiece = data.updatedShieldedPiece;
+
+      console.log("[ChessGame] Received move from server:", receivedMove);
+      if (updatedShieldedPiece) {
+        console.log("[ChessGame] With updatedShieldedPiece:", updatedShieldedPiece);
+      }
+
+      // Check if the move is an echo of the client's own move
+      if (receivedMove.color === color) {
+        console.log("[ChessGame] Received an echo of my own move. Processing potential state updates only.");
+        // If it's my own move, the local game state should already be updated by makeMove.
+        // We only need to process potential state updates from the server, like for shielded pieces.
+        if (updatedShieldedPiece) {
+          if (myShieldedPieceInfo && updatedShieldedPiece.id === myShieldedPieceInfo.id) {
+            console.log(`[ChessGame] Updating myShieldedPieceInfo (echo) from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPiece.currentSquare}`);
+            setMyShieldedPieceInfo(updatedShieldedPiece);
+          }
+          // (Future: Handle opponent's shielded piece updates if necessary)
+        }
+        // Do not re-apply the move or set FEN here, as makeMove already did.
+        return; // Skip further processing for echoed moves to prevent re-application.
+      }
+
+      // If it's not an echo (i.e., it's the opponent's move), proceed with applying it:
+      let moveSuccessfullyApplied = false;
 
       if (receivedMove.special?.startsWith("castle-master")) {
         const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
@@ -70,7 +102,6 @@ export default function ChessGame() {
           moveSuccessfullyApplied = true;
         } else {
           console.error("Failed to apply opponent's Castle Master move. FEN might be desynced.");
-          // Potentially request FEN sync from server here.
         }
       } else if (receivedMove.special === "pawn_rush_manual") {
         const gameChanged = applyPawnRushOpponentMove({ game, receivedMove });
@@ -83,20 +114,18 @@ export default function ChessGame() {
       } else if (receivedMove.special === "focused_bishop") {
         const gameChanged = applyFocusedBishopOpponentMove({
           game,
-          receivedMove: receivedMove as OpponentFocusedBishopMove, // Ensure type assertion if needed
+          receivedMove: receivedMove as OpponentFocusedBishopMove,
         });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
           console.error("Failed to apply opponent's Focused Bishop move. FEN might be desynced.");
-          // Even if it fails, we don't want to try it as a standard move.
-          // The error is logged by applyFocusedBishopOpponentMove.
         }
       } else if (receivedMove.special === "corner_blitz") {
         const gameChanged = applyCornerBlitzOpponentMove({
           game,
-          receivedMove: receivedMove as any, // Cast if OpponentCornerBlitzMove is specific
+          receivedMove: receivedMove as any,
         });
         if (gameChanged) {
           setFen(game.fen());
@@ -105,8 +134,6 @@ export default function ChessGame() {
           console.error("Failed to apply opponent's Corner Blitz move. FEN might be desynced.");
         }
       } else {
-        // Standard move processing (no 'special' tag or unhandled 'special' tag)
-        console.log("[ChessGame] Applying as standard move:", receivedMove);
         const standardMove = game.move({
           from: receivedMove.from,
           to: receivedMove.to,
@@ -115,23 +142,32 @@ export default function ChessGame() {
 
         if (standardMove) {
           setFen(game.fen());
-          moveSuccessfullyApplied = true; // this is the default path if no special
+          moveSuccessfullyApplied = true;
         } else {
           console.error(
             `[ChessGame] Standard game.move() failed for received move. ` +
             `This should not happen if server validated. Move: ${JSON.stringify(receivedMove)}. Current FEN: ${game.fen()}`
           );
-          // This implies a potential desync or an issue with server validation logic if a non-special move arrives here and fails.
         }
       }
 
-      // Check game over states AFTER the move is applied (either special or standard)
-      if (moveSuccessfullyApplied) { // Only check if a move was actually made
+      if (moveSuccessfullyApplied) {
+        // After move application and FEN update:
+        if (updatedShieldedPiece) {
+          if (myShieldedPieceInfo && updatedShieldedPiece.id === myShieldedPieceInfo.id) {
+            console.log(`[ChessGame] Updating myShieldedPieceInfo.currentSquare from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPiece.currentSquare}`);
+            setMyShieldedPieceInfo(updatedShieldedPiece);
+          }
+          // Placeholder for opponent's shielded piece update
+          // else if (opponentShieldedPieceInfo && updatedShieldedPiece.id === opponentShieldedPiece.id) {
+          //   setOpponentShieldedPieceInfo(updatedShieldedPiece);
+          // }
+        }
+
+        // Check game over states
         if (game.isCheckmate()) {
-          const winner = game.turn() === "w" ? "black" : "white"; // Winner is whose turn it ISN'T
+          const winner = game.turn() === "w" ? "black" : "white";
           setGameOverMessage(`${winner} wins by checkmate`);
-          // Note: Server typically dictates game over, client updates UI.
-          // This client-side check is good for immediate UI feedback.
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
         } else if (game.isStalemate()) {
@@ -153,9 +189,18 @@ export default function ChessGame() {
       setRevealedAdvantages(data);
     });
 
-    const handleAdvantageAssigned = (advantage: Advantage) => {
-      setMyAdvantage(advantage);
-      console.log("Advantage assigned:", advantage);
+    const handleAdvantageAssigned = (data: { advantage: Advantage, shieldedPiece?: ShieldedPieceInfo }) => {
+      setMyAdvantage(data.advantage);
+      console.log("Advantage assigned:", data.advantage);
+      if (data.shieldedPiece) {
+        setMyShieldedPieceInfo(data.shieldedPiece);
+        // Debug log for the player's own shielded piece
+        if (data.advantage.id === "silent_shield") {
+          console.log(
+            `SILENT SHIELD: Your ${data.shieldedPiece.type.toUpperCase()} on ${data.shieldedPiece.initialSquare} is protected for the entire game.`
+          );
+        }
+      }
     };
 
     socket.on("advantageAssigned", handleAdvantageAssigned);
@@ -221,6 +266,15 @@ export default function ChessGame() {
 
     // Capture FEN before any move attempt for potential server-side deflection
     fenSnapshotBeforeMove.current = game.fen();
+
+    // Client-side check for capturing opponent's shielded piece (placeholder for now)
+    // This requires opponentShieldedPieceInfo to be populated, which is not done in this step.
+    // For now, opponentShieldedPieceInfo will be null.
+    const opponentShieldedPieceInfo: ShieldedPieceInfo | null = null; // Placeholder
+    if (isAttemptToCaptureShieldedPieceClient(to, opponentShieldedPieceInfo, game)) {
+      alert("Client check: This piece is protected by Silent Shield and cannot be captured.");
+      return null; // Prevent move
+    }
 
     let move: any; // This will hold the move object to be sent or processed
 
@@ -349,16 +403,22 @@ export default function ChessGame() {
       const piece = game.get(from as Square);
       const isPawnPromotion = piece?.type === "p" &&
         ((piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1"));
-      const standardMoveAttempt = game.move({
-        from,
-        to,
-        ...(isPawnPromotion ? { promotion: "q" } : {})
-      });
-      if (standardMoveAttempt) {
-        move = standardMoveAttempt; // Assign to 'move' if successful
-      } else {
-        console.log("[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).");
-        return null; // Explicitly return null if standard move is invalid
+      try {
+        const standardMoveAttempt = game.move({
+          from,
+          to,
+          ...(isPawnPromotion ? { promotion: "q" } : {})
+        });
+        if (standardMoveAttempt) {
+          move = standardMoveAttempt;
+        } else {
+           console.log("[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).");
+           return null;
+          }
+      } catch (err: any) {
+        console.error("[ChessGame] makeMove: game.move() threw an error:", err.message);
+        alert("Invalid move: " + err.message);
+        return null;
       }
     }
 
