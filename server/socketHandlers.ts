@@ -5,6 +5,15 @@ import { Advantage } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
+import { handleShieldWallServer } from "./logic/advantages/shieldWall";
+import { 
+  handleFocusedBishopServer, 
+  FocusedBishopAdvantageState 
+} from "./logic/advantages/focusedBishop";
+import { 
+  handleCornerBlitzServer, 
+  CornerBlitzAdvantageRookState 
+} from "./logic/advantages/cornerBlitz";
 
 console.log("✅ setupSocketHandlers loaded");
 
@@ -32,7 +41,12 @@ type RoomState = {
   black?: string;
   whiteAdvantage?: Advantage;
   blackAdvantage?: Advantage;
-  fen?: string; // Added FEN for server-side state
+  fen?: string;
+  // Add new states for Focused Bishop
+  whiteFocusedBishopState?: FocusedBishopAdvantageState;
+  blackFocusedBishopState?: FocusedBishopAdvantageState;
+  whiteRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
+  blackRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -84,8 +98,26 @@ export function setupSocketHandlers(io: Server) {
       console.log(`🔌 ${socket.id} is joining room ${roomId}`);
       
       if (!rooms[roomId]) {
-        rooms[roomId] = { fen: new Chess().fen() };
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen}`);
+        rooms[roomId] = { 
+          fen: new Chess().fen(),
+          // Initialize advantage states
+          whiteFocusedBishopState: { focusedBishopUsed: false },
+          blackFocusedBishopState: { focusedBishopUsed: false },
+          // Initialize other new states as needed
+          whiteRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
+          blackRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
+        };
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen} and default advantage states.`);
+      } else {
+        // If room exists but a player slot might be rejoining, ensure states are there
+        if (rooms[roomId].white) {
+          if (!rooms[roomId].whiteFocusedBishopState) rooms[roomId].whiteFocusedBishopState = { focusedBishopUsed: false };
+          if (!rooms[roomId].whiteRooksMoved) rooms[roomId].whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
+        }
+        if (rooms[roomId].black) {
+          if (!rooms[roomId].blackFocusedBishopState) rooms[roomId].blackFocusedBishopState = { focusedBishopUsed: false };
+          if (!rooms[roomId].blackRooksMoved) rooms[roomId].blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
+        }
       }
       
       const room = rooms[roomId]; 
@@ -145,84 +177,222 @@ export function setupSocketHandlers(io: Server) {
         }
         
         let moveResult: Move | null = null; 
-        let resultFen = room.fen; 
-
-        // clientMoveData is initially 'unknown' or 'any' from socket.io
-        // Cast it to our defined ClientMovePayload type
         const receivedMove = clientMoveData as ClientMovePayload;
+        const originalFenBeforeAttempt = room.fen!; // Assert non-null if sure room.fen exists
 
-        // TEST: Verify Castle Master server-side logic (king/rook moved, path clear/blocked, in check, through attacked squares).
+        // Fetch advantage states for the current player
+        let currentPlayerAdvantageState_FB: FocusedBishopAdvantageState | undefined;
+        let currentPlayerRooksMoved_CB: CornerBlitzAdvantageRookState | undefined;
+
+        if (senderColor === 'white') {
+            currentPlayerAdvantageState_FB = room.whiteFocusedBishopState;
+            currentPlayerRooksMoved_CB = room.whiteRooksMoved;
+        } else if (senderColor === 'black') {
+            currentPlayerAdvantageState_FB = room.blackFocusedBishopState;
+            currentPlayerRooksMoved_CB = room.blackRooksMoved;
+        }
+        // Fallback initialization if states are missing (should be handled by joinRoom)
+        if (!currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = { focusedBishopUsed: false };
+        if (!currentPlayerRooksMoved_CB) {
+            currentPlayerRooksMoved_CB = senderColor === 'white' ? { a1: false, h1: false } : { a8: false, h8: false };
+        }
+        // Update room state with fallbacks if they were applied
+        if (senderColor === 'white') {
+            if (!room.whiteFocusedBishopState) room.whiteFocusedBishopState = currentPlayerAdvantageState_FB;
+            if (!room.whiteRooksMoved) room.whiteRooksMoved = currentPlayerRooksMoved_CB;
+        } else if (senderColor === 'black') {
+            if (!room.blackFocusedBishopState) room.blackFocusedBishopState = currentPlayerAdvantageState_FB;
+            if (!room.blackRooksMoved) room.blackRooksMoved = currentPlayerRooksMoved_CB;
+        }
+
+
         if (receivedMove.special?.startsWith("castle-master")) {
+          // Assumes handleCastleMaster sets moveResult and updates serverGame internally
           if (senderColor === null) { 
             console.error(`[sendMove] senderColor is null before calling handleCastleMaster for room ${roomId}.`);
             socket.emit("serverError", { message: "Internal server error processing your move." });
             return;
           }
           const castleMasterResult = handleCastleMaster({
-            game: serverGame,
-            clientMoveData: receivedMove as any, // handleCastleMaster has specific type with required color, rookFrom, rookTo
-            currentFen: room.fen,
-            playerColor: senderColor[0] as 'w' | 'b',
+            game: serverGame, // serverGame is used and potentially modified
+            clientMoveData: receivedMove as any, 
+            currentFen: originalFenBeforeAttempt!, // Pass original FEN
+            playerColor: senderColor![0] as 'w' | 'b',
           });
           moveResult = castleMasterResult.moveResult;
-          resultFen = castleMasterResult.nextFen;
-          if (!moveResult) {
-             socket.emit("invalidMove", { message: "Invalid Castle Master move or server error.", move: clientMoveData });
-            return;
-          }
+          // If castleMasterResult.moveResult is null, serverGame should be reverted by handleCastleMaster or here.
+          // Assuming handleCastleMaster reverts serverGame to 'currentFen' if moveResult is null.
+          if (!moveResult) serverGame.load(originalFenBeforeAttempt!); // Ensure revert if special move fails
         } else if (receivedMove.special === "pawn_rush_manual") {
-          // TEST: Verify Pawn Rush server-side logic with various pawn moves.
           if (senderColor === null) { 
             console.error(`[sendMove] senderColor is null before calling handlePawnRush for room ${roomId}. This should not happen.`);
             socket.emit("serverError", { message: "Internal server error processing your move." });
             return;
           }
-          // handlePawnRush expects clientMoveData.color to be defined. 
-          // The ClientMovePayload type has color as optional.
-          // The handlePawnRush function itself checks if clientMoveData.color is present.
           const pawnRushResult = handlePawnRush({
-            game: serverGame, 
-            clientMoveData: receivedMove, // Pass receivedMove directly
-            currentFen: room.fen, 
-            playerColor: senderColor[0] as 'w' | 'b', 
+            game: serverGame,
+            clientMoveData: receivedMove,
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
           });
           moveResult = pawnRushResult.moveResult;
-          resultFen = pawnRushResult.nextFen; 
-          if (!moveResult) {
-            socket.emit("invalidMove", { message: "Invalid Pawn Rush Manual move.", move: clientMoveData });
-            return; 
+          if (!moveResult) serverGame.load(originalFenBeforeAttempt!); // Ensure revert
+        } else if (receivedMove.special === "focused_bishop") {
+          if (!senderColor) { // Should be caught by earlier checks, but as safeguard
+             socket.emit("serverError", { message: "Player color not determined."});
+             return; // Exit early
           }
-        } else {
+          const fbResult = handleFocusedBishopServer({
+            game: serverGame, // serverGame is pristine (originalFenBeforeAttempt)
+            clientMoveData: receivedMove as any,
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
+            advantageState: currentPlayerAdvantageState_FB!,
+          });
+
+          moveResult = fbResult.moveResult; // This is the chess.js Move object
+
+          if (moveResult) {
+            // serverGame was modified by handleFocusedBishopServer successfully
+            room.fen = serverGame.fen(); // Get the FEN from the modified serverGame
+            if (senderColor === 'white') {
+              room.whiteFocusedBishopState = fbResult.advantageStateUpdated;
+            } else {
+              room.blackFocusedBishopState = fbResult.advantageStateUpdated;
+            }
+          } else {
+            // handleFocusedBishopServer should have reverted serverGame if it failed.
+            // If not, serverGame.load(originalFenBeforeAttempt!) here is a safeguard.
+            if (serverGame.fen() !== originalFenBeforeAttempt!) {
+                 serverGame.load(originalFenBeforeAttempt!);
+            }
+            socket.emit("invalidMove", { 
+              message: "Focused Bishop move rejected by server.", 
+              move: clientMoveData 
+            });
+          }
+        } else if (receivedMove.special === "corner_blitz") {
+          const cbResult = handleCornerBlitzServer({
+            game: serverGame, // serverGame is loaded with originalFenBeforeAttempt
+            clientMoveData: receivedMove as any, // Cast as needed
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
+            rooksMovedState: currentPlayerRooksMoved_CB!, // Assert non-null
+          });
+
+          moveResult = cbResult.moveResult;
+
+          if (moveResult) {
+            // serverGame was modified by handleCornerBlitzServer
+            room.fen = serverGame.fen(); // Get FEN from the modified serverGame
+            if (senderColor === 'white') {
+              room.whiteRooksMoved = cbResult.advantageStateUpdated;
+            } else {
+              room.blackRooksMoved = cbResult.advantageStateUpdated;
+            }
+          } else {
+            // Revert serverGame if it changed, though handler should do this
+            if (serverGame.fen() !== originalFenBeforeAttempt!) {
+                 serverGame.load(originalFenBeforeAttempt!);
+            }
+            socket.emit("invalidMove", { 
+              message: "Corner Blitz move rejected by server.", 
+              move: clientMoveData 
+            });
+          }
+        } else { 
+          // Standard move attempt
           moveResult = serverGame.move({ 
               from: receivedMove.from, 
               to: receivedMove.to, 
               promotion: receivedMove.promotion as any 
           });
+
           if (moveResult) {
-            resultFen = serverGame.fen();
+            // Shield Wall Check - only if the standard move itself was valid
+            if (moveResult.captured && opponentAdvantage?.id === 'shield_wall' && opponentColor) {
+              const shieldWallCheck = handleShieldWallServer({
+                game: serverGame, // serverGame state is *after* the provisional move
+                move: moveResult,
+                shieldPlayerColor: opponentColor === 'white' ? 'w' : 'b',
+                shieldPlayerAdvantageActive: true 
+              });
+
+              if (shieldWallCheck.rejected) {
+                serverGame.load(originalFenBeforeAttempt); // Revert serverGame
+                socket.emit("invalidMove", { 
+                  message: shieldWallCheck.reason || "Move rejected by opponent's Shield Wall.", 
+                  move: clientMoveData 
+                });
+                moveResult = null; // Nullify moveResult
+              }
+            }
           }
         }
+        // End of special/standard move blocks. moveResult is either a valid Move object or null.
 
-        if (moveResult === null) {
-          console.warn(`[sendMove] Invalid move by ${senderColor} (${senderId}) in room ${roomId}:`, receivedMove, `Server FEN: ${room.fen}`);
-          socket.emit("invalidMove", { message: "Your move was deemed invalid by the server.", move: clientMoveData });
-          return;
-        }
+        
+        // Universal post-move processing (if moveResult is not null)
+        if (moveResult) {
+          const currentResultFen = serverGame.fen(); // FEN after successful move 
 
-        // TEST: Verify Auto Deflect server-side logic (knight moves, resulting in check/no check for opponent).
-        const isDeflected = handleAutoDeflect({
-          game: serverGame, 
-          moveResult: moveResult, 
-          opponentAdvantage: opponentAdvantage,
-        });
+          const isDeflected = handleAutoDeflect({
+            game: serverGame, 
+            moveResult: moveResult, 
+            opponentAdvantage: opponentAdvantage,
+          });
 
-        if (isDeflected) {
-          console.log(`[sendMove] Knight move by ${senderColor} deflected by ${opponentColor}'s Auto Deflect in room ${roomId}.`);
-          socket.emit("moveDeflected", { move: clientMoveData }); 
-        } else {
-          room.fen = resultFen; 
-          console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
-          socket.to(roomId).emit("receiveMove", clientMoveData); 
+          if (isDeflected) {
+            if (serverGame.fen() !== originalFenBeforeAttempt!) {
+                 serverGame.load(originalFenBeforeAttempt!); // Revert serverGame
+            }
+            socket.emit("moveDeflected", { move: clientMoveData }); 
+          } else {
+            // Authoritative FEN update was already done by the specific handler
+            // if it modified serverGame and we set room.fen = serverGame.fen().
+            // For standard moves, room.fen is updated here.
+            // Let's ensure room.fen is set from currentResultFen if not a special move that already did it.
+            if (room.fen !== currentResultFen && !receivedMove.special) { // Standard move path
+                 room.fen = currentResultFen;
+            } else if (room.fen !== currentResultFen && receivedMove.special) {
+                // This means a special handler updated serverGame, but we didn't sync room.fen with it.
+                // This should be handled within each special move block like it is for Corner Blitz/Focused Bishop.
+                // For CastleMaster/PawnRush, ensure room.fen = resultFen or serverGame.fen() is done.
+                // The current CB and FB handlers ensure serverGame is updated and room.fen is set from it.
+            }
+             if (room.fen !== currentResultFen && (receivedMove.special?.startsWith("castle-master") || receivedMove.special === "pawn_rush_manual")) {
+                // For older special moves, if they set resultFen but not room.fen directly
+                // This is a bit of a patch. Ideally, all handlers ensure serverGame and room.fen are consistent.
+                // For now, let's assume castleMaster/PawnRush handlers set their respective 'resultFen' which is then used.
+                // The original logic for those was: `room.fen = resultFen;` if not deflected.
+                // Let's stick to that: resultFen is set by these handlers, then used.
+                // Since `resultFen` was removed, let's assume those handlers now ensure `serverGame` is updated
+                // and we can use `serverGame.fen()` for `room.fen` update in the non-deflected case.
+                 room.fen = currentResultFen; // This should be fine if all handlers update serverGame.
+            }
+
+
+            console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
+            socket.to(roomId).emit("receiveMove", clientMoveData); 
+          }
+        } else { 
+          // This block executes if moveResult is null.
+          // It assumes that if a specific handler (ShieldWall, FB, CB, etc.) made moveResult null,
+          // it ideally also emitted a specific error. This is a fallback for other cases 
+          // (e.g. basic chess.js move invalidity not caught by a specific advantage handler).
+          let message = "Your move was deemed invalid by the server (generic fallback).";
+          // Attempt to provide a slightly more specific message if possible
+          if (receivedMove.special) {
+            // This might be redundant if special handlers always emit their own errors on failure.
+            // However, if a special handler fails before emitting, this provides some context.
+            message = `Your special move (${receivedMove.special}) could not be processed.`;
+          } else if (serverGame.fen() === originalFenBeforeAttempt) {
+            // If it was not a special move and the FEN hasn't changed, it was likely an invalid standard move.
+             message = "Your move was invalid according to chess rules.";
+          }
+          
+          console.warn(`[sendMove] Fallback: Null moveResult for ${senderColor} (${senderId}) in room ${roomId}:`, receivedMove, `FEN before attempt: ${originalFenBeforeAttempt}. Emitting generic error.`);
+          socket.emit("invalidMove", { message: message, move: clientMoveData });
         }
       });
     });

@@ -23,23 +23,17 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  {
-    id: "castle_master",
-    name: "Castle Master",
-    description: "You may castle even through check once.",
-    rarity: "legendary"
+  { 
+    id: "corner_blitz",
+    name: "Corner Blitz",
+    description: "Your rooks may leap over pawns on their first move.",
+    rarity: "common"
   },
-  {
-    id: "auto_deflect",
-    name: "Auto-Deflect",
-    description: "First time a piece is captured, it dodges instead.",
-    rarity: "legendary"
-  },
-  {
-    id: "pawn_rush",
-    name: "Pawn Rush",
-    description: "All pawns can move 3 squares forward on their first move.",
-    rarity: "rare"
+  { 
+    id: "shield_wall",
+    name: "Shield Wall",
+    description: "Your pawns cannot be captured during the first 5 moves.",
+    rarity: "common"
   }
 ];
 

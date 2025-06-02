@@ -9,6 +9,18 @@ import { socket } from "../socket";
 import { Advantage } from "../../shared/types";
 import { handlePawnRushClient, applyPawnRushOpponentMove } from "../logic/advantages/pawnRush";
 import { handleCastleMasterClient, applyCastleMasterOpponentMove } from "../logic/advantages/castleMaster"; // Added import
+import { 
+  handleFocusedBishopClient, 
+  applyFocusedBishopOpponentMove, 
+  FocusedBishopClientMove, 
+  OpponentFocusedBishopMove 
+} from "../logic/advantages/focusedBishop";
+import {
+  handleCornerBlitzClient,
+  applyCornerBlitzOpponentMove,
+  PlayerRooksMovedState, // Type for the new ref state
+  // CornerBlitzClientMove, OpponentCornerBlitzMove (if needed for explicit typing)
+} from "../logic/advantages/cornerBlitz";
 
 export default function ChessGame() {
   const { roomId } = useParams(); //This gets /game/:roomId
@@ -50,47 +62,92 @@ export default function ChessGame() {
     };
 
     socket.on("receiveMove", (receivedMove: ReceivedMoveData) => {
-      // TEST: Verify client-side handling of opponent's Castle Master move.
+      console.log("[ChessGame] Received move from server:", receivedMove); // Log the raw received move
+
+      let moveSuccessfullyApplied = false; // Flag to track if any handler processed the move
+
       if (receivedMove.special?.startsWith("castle-master")) {
-        // Call the refactored function for applying opponent's Castle Master move
         const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
         if (gameChanged) {
           setFen(game.fen());
+          moveSuccessfullyApplied = true;
         } else {
-          // Handle error or inconsistent state if applyCastleMasterOpponentMove fails
           console.error("Failed to apply opponent's Castle Master move. FEN might be desynced.");
-          // Optionally, request a FEN sync from the server here.
+          // Potentially request FEN sync from server here.
         }
       } else if (receivedMove.special === "pawn_rush_manual") {
-        // TEST: Verify client-side handling of opponent's Pawn Rush move.
-        // Call the refactored function
-        // Ensure receivedMove matches OpponentPawnRushMove type if more fields are needed by applyPawnRushOpponentMove
         const gameChanged = applyPawnRushOpponentMove({ game, receivedMove });
         if (gameChanged) {
           setFen(game.fen());
+          moveSuccessfullyApplied = true;
         } else {
-          // Handle error or inconsistent state if applyPawnRushOpponentMove fails
           console.error("Failed to apply opponent's Pawn Rush move. FEN might be desynced.");
-          // Optionally, request a FEN sync from the server here.
         }
-
-      } else {
-        // Standard move or other special move not handled here
-        // Ensure this part is safe if `receivedMove` doesn't have `promotion`
-        const standardMove = game.move({ 
-          from: receivedMove.from, 
-          to: receivedMove.to, 
-          promotion: receivedMove.promotion ? receivedMove.promotion as any : undefined
+      } else if (receivedMove.special === "focused_bishop") {
+        const gameChanged = applyFocusedBishopOpponentMove({
+          game,
+          receivedMove: receivedMove as OpponentFocusedBishopMove, // Ensure type assertion if needed
         });
-        // if (!standardMove) {
-          // This implies the server sent a move that chess.js on client deems illegal after all other special handling.
-          // This should ideally not happen if server validation is robust.
-          // console.error("Received move was deemed invalid by client's chess.js instance:", receivedMove);
-          // Potentially request FEN sync.
-        // }
-        setFen(game.fen());
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("Failed to apply opponent's Focused Bishop move. FEN might be desynced.");
+          // Even if it fails, we don't want to try it as a standard move.
+          // The error is logged by applyFocusedBishopOpponentMove.
+        }
+      } else if (receivedMove.special === "corner_blitz") {
+        const gameChanged = applyCornerBlitzOpponentMove({
+          game,
+          receivedMove: receivedMove as any, // Cast if OpponentCornerBlitzMove is specific
+        });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("Failed to apply opponent's Corner Blitz move. FEN might be desynced.");
+        }
+      } else {
+        // Standard move processing (no 'special' tag or unhandled 'special' tag)
+        console.log("[ChessGame] Applying as standard move:", receivedMove);
+        const standardMove = game.move({
+          from: receivedMove.from,
+          to: receivedMove.to,
+          promotion: receivedMove.promotion ? (receivedMove.promotion as any) : undefined,
+        });
+
+        if (standardMove) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true; // Though this is the default path if no special
+        } else {
+          // This is where the original error likely occurred for Focused Bishop
+          console.error(
+            `[ChessGame] Standard game.move() failed for received move. ` +
+            `This should not happen if server validated. Move: ${JSON.stringify(receivedMove)}. Current FEN: ${game.fen()}`
+          );
+          // This implies a potential desync or an issue with server validation logic if a non-special move arrives here and fails.
+        }
+      }
+
+      // Check game over states AFTER the move is applied (either special or standard)
+      if (moveSuccessfullyApplied) { // Only check if a move was actually made
+        if (game.isCheckmate()) {
+          const winner = game.turn() === "w" ? "black" : "white"; // Winner is whose turn it ISN'T
+          setGameOverMessage(`${winner} wins by checkmate`);
+          // Note: Server typically dictates game over, client updates UI.
+          // This client-side check is good for immediate UI feedback.
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+        } else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+        } else if (game.isThreefoldRepetition()) {
+          setGameOverMessage("Draw by Threefold Repetition");
+        } else if (game.isInsufficientMaterial()) {
+          setGameOverMessage("Draw by Insufficient Material");
+        }
       }
     });
+
 
     socket.on("revealAdvantages", (data: {
       whiteAdvantage?: Advantage;
@@ -141,6 +198,14 @@ export default function ChessGame() {
   // findKingSquare function removed as it was unused.
 
   const hasUsedCastleMaster = useRef(false);
+  const hasUsedFocusedBishop = useRef(false); // New for Focused Bishop
+  // New state for Corner Blitz: initialize based on player color when color is known,
+  // or initialize with all possible rooks if color is not yet known.
+  // For simplicity, initialize empty and populate when color is known, or manage all.
+  // Let's manage all and let the handler logic use the color to pick the right ones.
+  const playerRooksMoved = useRef<PlayerRooksMovedState>({ 
+    a1: false, h1: false, a8: false, h8: false 
+  });
 
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
@@ -153,14 +218,10 @@ export default function ChessGame() {
     // Capture FEN before any move attempt for potential server-side deflection
     fenSnapshotBeforeMove.current = game.fen();
 
-    let move: any;
-    const snapshot = game.fen(); // Snapshot for Castle Master's internal revert on its own FEN load failure
+    let move: any; // This will hold the move object to be sent or processed
 
     // Pawn Rush logic
-    // Allows pawns to move two squares forward from any rank,
-    // provided the path is clear.
-    // TEST: Verify client-side Pawn Rush move creation (valid/invalid paths, different ranks).
-    if (myAdvantage?.id === "pawn_rush" && color) { // Ensure color is not null
+    if (myAdvantage?.id === "pawn_rush" && color) { 
       const pawnRushMove = handlePawnRushClient({ game, from, to, color });
       if (pawnRushMove) {
         // The game instance is already updated by handlePawnRushClient if successful
@@ -168,85 +229,170 @@ export default function ChessGame() {
         // Note: setFen will be called later if move is successful.
         // The 'move' object here is what gets sent to the server.
       }
-      // If pawnRushMove is null, it means it wasn't a valid pawn rush.
-      // We proceed to check other advantages or standard move logic.
-      // If it *was* a pawn rush attempt that failed validation inside handlePawnRushClient,
-      // the game state should have been reverted by it, so 'game' is still valid for next checks.
     }
 
     // Castle Master logic
-    // Allows castling even if king/rook has moved. Usable once.
-    // Bypasses normal castling rights checks but respects path clear, not in check, and not through attacked squares.
-    // TEST: Verify client-side Castle Master move creation (king/rook moved, path clear/blocked, in check, through attacked squares, usage flag).
     if (!move && myAdvantage?.id === "castle_master" && !hasUsedCastleMaster.current && color) {
       const castleMasterResult = handleCastleMasterClient({ game, from, to, color });
 
       if (castleMasterResult.moveData) {
-        // The game instance is updated by handleCastleMasterClient if FEN load was successful.
-        // The component needs to update its FEN state from the game instance.
         setFen(game.fen()); 
-        move = castleMasterResult.moveData; // This is the object to send to the server
-        // The `move` object itself will be emitted later in makeMove if it's not null.
-        // No need to emit here.
+        move = castleMasterResult.moveData; 
       }
       
       if (castleMasterResult.advantageUsed) {
-        // This flag is set if an attempt to use Castle Master was made (pieces moved),
-        // even if the final FEN loading failed (in which case game state was reverted).
-        // This ensures the advantage is marked as "used" after one attempt.
         hasUsedCastleMaster.current = true;
       }
 
       if (castleMasterResult.moveData) {
-        // If a valid Castle Master move was constructed and game state updated,
-        // we should emit this move and potentially bypass further move processing in makeMove.
-        // The current structure of makeMove will emit `move` if it's truthy later on.
-        // If castleMasterResult.moveData is not null, it means the move was successful locally.
-        // We need to ensure this move is sent to the server.
-        // The existing makeMove structure handles emitting the `move` if it's valid.
-        // If moveData is not null, it means the local game state reflects the castle.
-        // We also need to return from makeMove here to prevent standard move logic.
         socket.emit("sendMove", { roomId, move: castleMasterResult.moveData });
-        return castleMasterResult.moveData; // Bypass further move processing
+        // Game over checks after emitting Castle Master move
+        if (game.isCheckmate()) { 
+            const winner = game.turn() === "w" ? "black" : "white";
+            setGameOverMessage(`${winner} wins by checkmate`);
+            socket.emit("gameOver", { roomId, winnerColor: winner });
+        } else if (game.isDraw()) { 
+            setGameOverMessage("Draw");
+            socket.emit("gameDraw", { roomId });
+        }
+        return castleMasterResult.moveData; 
       } else if (castleMasterResult.advantageUsed) {
-        // Advantage was attempted, pieces might have been moved and reverted.
-        // No valid move object to send, but we should prevent further standard move logic.
-        return null; // Or handle as an invalid move attempt
+        return null; 
       }
-      // If !advantageUsed, it means it wasn't a Castle Master attempt (e.g., not a king move to castling squares)
-      // and we fall through to standard move logic.
+    }
+
+    // Focused Bishop Logic
+    if (!move && myAdvantage?.id === "focused_bishop" && !hasUsedFocusedBishop.current && color) {
+      const focusedBishopResult = handleFocusedBishopClient({
+        game,
+        from,
+        to,
+        color,
+        hasUsedFocusedBishop: hasUsedFocusedBishop.current,
+      });
+      if (focusedBishopResult.moveData) {
+        setFen(game.fen()); 
+        move = focusedBishopResult.moveData; 
+      }
+      if (focusedBishopResult.advantageUsedAttempt) {
+        hasUsedFocusedBishop.current = true; 
+        if (focusedBishopResult.moveData) {
+          socket.emit("sendMove", { roomId, move: focusedBishopResult.moveData });
+          // Game over checks
+          if (game.isCheckmate()) { 
+            const winner = game.turn() === "w" ? "black" : "white";
+            setGameOverMessage(`${winner} wins by checkmate`);
+            socket.emit("gameOver", { roomId, winnerColor: winner });
+          } else if (game.isDraw()) { 
+            setGameOverMessage("Draw");
+            socket.emit("gameDraw", { roomId });
+          }
+          return focusedBishopResult.moveData; 
+        } else {
+          return null; 
+        }
+      }
+    }
+
+    // Corner Blitz Logic
+    if (!move && myAdvantage?.id === "corner_blitz" && color) {
+      console.log("[ChessGame] makeMove: Checking Corner Blitz for", { from, to });
+      const cornerBlitzResult = handleCornerBlitzClient({
+        game,
+        from,
+        to,
+        color,
+        playerRooksMoved: playerRooksMoved.current,
+      });
+      console.log("[ChessGame] makeMove: Corner Blitz result:", cornerBlitzResult);
+
+      if (cornerBlitzResult.moveData) {
+        // Valid Corner Blitz move constructed and applied locally by handleCornerBlitzClient
+        setFen(game.fen()); // Update FEN from game instance modified by handler
+
+        if (cornerBlitzResult.rookMovedKey) {
+          playerRooksMoved.current = {
+            ...playerRooksMoved.current,
+            [cornerBlitzResult.rookMovedKey]: true,
+          };
+          console.log("[ChessGame] makeMove: Updated playerRooksMoved:", playerRooksMoved.current);
+        }
+        
+        // Emit the special move to the server
+        console.log("[ChessGame] makeMove: Emitting Corner Blitz move to server:", cornerBlitzResult.moveData);
+        socket.emit("sendMove", { roomId, move: cornerBlitzResult.moveData });
+        
+        // Check for game over states immediately after this client-side validated special move
+        if (game.isCheckmate()) {
+          const winner = game.turn() === "w" ? "black" : "white";
+          setGameOverMessage(`${winner} wins by checkmate`);
+          socket.emit("gameOver", { roomId, winnerColor: winner });
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+          socket.emit("gameDraw", { roomId });
+        }
+        // IMPORTANT: Return early to prevent this move from being processed by standard game.move()
+        return cornerBlitzResult.moveData; 
+      } else if (cornerBlitzResult.rookMovedKey) {
+        // An attempt was made for a specific rook (rookMovedKey is not null), but it was invalid
+        // (e.g., path blocked, invalid target). No moveData was generated.
+        // Do not proceed to standard game.move().
+        console.log(`[ChessGame] makeMove: Corner Blitz attempt for rook ${cornerBlitzResult.rookMovedKey} failed locally. Not sending to server or trying as standard move.`);
+        return null; // Prevent standard move logic by returning null
+      }
+      // If rookMovedKey was null, it means it wasn't even a Corner Blitz attempt (e.g., wrong piece clicked),
+      // so we fall through, and 'move' remains undefined, allowing standard logic or other advantages.
     }
 
     // Fallback: standard move
+    // This block is reached if 'move' is still undefined (no special advantage handled it and returned early)
     if (!move) {
+      console.log("[ChessGame] makeMove: Attempting as standard move for", { from, to });
       const piece = game.get(from as Square);
       const isPawnPromotion = piece?.type === "p" &&
         ((piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1"));
-
-      move = game.move({
+      const standardMoveAttempt = game.move({
         from,
         to,
         ...(isPawnPromotion ? { promotion: "q" } : {})
       });
-    }
-
-    // Client-side Auto-Deflect logic removed as server now handles this validation.
-
-    if (move) {
-      setFen(game.fen());
-      socket.emit("sendMove", { roomId, move });
-
-      if (game.isCheckmate()) {
-        const winner = game.turn() === "w" ? "black" : "white";
-        setGameOverMessage(`${winner} wins by checkmate`);
-        socket.emit("gameOver", { roomId, winnerColor: winner });
-      } else if (game.isDraw()) {
-        setGameOverMessage("Draw");
-        socket.emit("gameDraw", { roomId });
+      if (standardMoveAttempt) {
+        move = standardMoveAttempt; // Assign to 'move' if successful
+      } else {
+        console.log("[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).");
+        return null; // Explicitly return null if standard move is invalid
       }
     }
 
-    return move;
+    // Emit standard moves or special moves that didn't emit themselves and return early
+    // (This block should now primarily handle standard moves if 'move' got populated by the standard logic)
+    if (move) { 
+      // If 'move' is populated here, it means it was a successful standard move or pawn rush.
+      // Special moves like Corner Blitz, Focused Bishop, Castle Master should have returned earlier.
+      console.log("[ChessGame] makeMove: Emitting standard or Pawn Rush move to server:", move);
+      setFen(game.fen()); // Ensure FEN is updated for standard moves too
+      socket.emit("sendMove", { roomId, move });
+
+      // Game over checks for standard moves / Pawn Rush
+      if (game.isCheckmate()) { 
+        const winner = game.turn() === "w" ? "black" : "white";
+        setGameOverMessage(`${winner} wins by checkmate`);
+        socket.emit("gameOver", { roomId, winnerColor: winner });
+      } else if (game.isDraw()) { 
+        setGameOverMessage("Draw");
+        socket.emit("gameDraw", { roomId });
+      }  else if (game.isStalemate()) { // Added more draw checks here as well
+        setGameOverMessage("Draw by Stalemate");
+        socket.emit("gameDraw", { roomId });
+      } else if (game.isThreefoldRepetition()) {
+        setGameOverMessage("Draw by Threefold Repetition");
+        socket.emit("gameDraw", { roomId });
+      } else if (game.isInsufficientMaterial()) {
+        setGameOverMessage("Draw by Insufficient Material");
+        socket.emit("gameDraw", { roomId });
+      }
+    }
+    return move; // Return the move object (or null if all attempts failed)
   };
 
   return (
