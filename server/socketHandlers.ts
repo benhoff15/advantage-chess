@@ -15,7 +15,7 @@ import {
   CornerBlitzAdvantageRookState 
 } from "./logic/advantages/cornerBlitz";
 
-console.log("✅ setupSocketHandlers loaded");
+console.log("setupSocketHandlers loaded");
 
 // Module-level definition for ClientMovePayload
 type ClientMovePayload = {
@@ -90,12 +90,12 @@ export function setupSocketHandlers(io: Server) {
         (rooms[roomId].white === socket.id || rooms[roomId].black === socket.id);
 
         if (alreadyInRoom) {
-          console.log(`⚠️ ${socket.id} already joined room ${roomId}`);
+          console.log(`${socket.id} already joined room ${roomId}`);
           return;
         }
 
       socket.join(roomId);
-      console.log(`🔌 ${socket.id} is joining room ${roomId}`);
+      console.log(`${socket.id} is joining room ${roomId}`);
       
       if (!rooms[roomId]) {
         rooms[roomId] = { 
@@ -127,20 +127,20 @@ export function setupSocketHandlers(io: Server) {
         room.whiteAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "white");
         socket.emit("advantageAssigned", room.whiteAdvantage); 
-        console.log(`⚪ Assigned ${socket.id} as white with advantage: ${room.whiteAdvantage.name}`);
+        console.log(`Assigned ${socket.id} as white with advantage: ${room.whiteAdvantage.name}`);
       } else if (!room.black) {
         room.black = socket.id;
         room.blackAdvantage = assignRandomAdvantage();
         socket.emit("colorAssigned", "black");
         socket.emit("advantageAssigned", room.blackAdvantage);
-        console.log(`⚫ Assigned ${socket.id} as black with advantage: ${room.blackAdvantage.name}`);
+        console.log(`Assigned ${socket.id} as black with advantage: ${room.blackAdvantage.name}`);
         io.to(roomId).emit("opponentJoined");
       } else {
         socket.emit("roomFull");
-        console.log(`❌ Room ${roomId} is full`);
+        console.log(`Room ${roomId} is full`);
         return;
       }
-      console.log(`✅ Room state:`, rooms[roomId]);
+      console.log(`Room state:`, rooms[roomId]);
 
       socket.on("sendMove", ({ roomId, move: clientMoveData }) => {
         const room = rooms[roomId];
@@ -250,7 +250,7 @@ export function setupSocketHandlers(io: Server) {
             advantageState: currentPlayerAdvantageState_FB!,
           });
 
-          moveResult = fbResult.moveResult; // This is the chess.js Move object
+          moveResult = fbResult.moveResult;
 
           if (moveResult) {
             // serverGame was modified by handleFocusedBishopServer successfully
@@ -351,23 +351,12 @@ export function setupSocketHandlers(io: Server) {
             // Authoritative FEN update was already done by the specific handler
             // if it modified serverGame and we set room.fen = serverGame.fen().
             // For standard moves, room.fen is updated here.
-            // Let's ensure room.fen is set from currentResultFen if not a special move that already did it.
             if (room.fen !== currentResultFen && !receivedMove.special) { // Standard move path
                  room.fen = currentResultFen;
             } else if (room.fen !== currentResultFen && receivedMove.special) {
-                // This means a special handler updated serverGame, but we didn't sync room.fen with it.
-                // This should be handled within each special move block like it is for Corner Blitz/Focused Bishop.
-                // For CastleMaster/PawnRush, ensure room.fen = resultFen or serverGame.fen() is done.
-                // The current CB and FB handlers ensure serverGame is updated and room.fen is set from it.
+
             }
              if (room.fen !== currentResultFen && (receivedMove.special?.startsWith("castle-master") || receivedMove.special === "pawn_rush_manual")) {
-                // For older special moves, if they set resultFen but not room.fen directly
-                // This is a bit of a patch. Ideally, all handlers ensure serverGame and room.fen are consistent.
-                // For now, let's assume castleMaster/PawnRush handlers set their respective 'resultFen' which is then used.
-                // The original logic for those was: `room.fen = resultFen;` if not deflected.
-                // Let's stick to that: resultFen is set by these handlers, then used.
-                // Since `resultFen` was removed, let's assume those handlers now ensure `serverGame` is updated
-                // and we can use `serverGame.fen()` for `room.fen` update in the non-deflected case.
                  room.fen = currentResultFen; // This should be fine if all handlers update serverGame.
             }
 
@@ -377,9 +366,6 @@ export function setupSocketHandlers(io: Server) {
           }
         } else { 
           // This block executes if moveResult is null.
-          // It assumes that if a specific handler (ShieldWall, FB, CB, etc.) made moveResult null,
-          // it ideally also emitted a specific error. This is a fallback for other cases 
-          // (e.g. basic chess.js move invalidity not caught by a specific advantage handler).
           let message = "Your move was deemed invalid by the server (generic fallback).";
           // Attempt to provide a slightly more specific message if possible
           if (receivedMove.special) {
@@ -407,7 +393,7 @@ export function setupSocketHandlers(io: Server) {
           socket.to(roomId).emit("opponentDisconnected");
         }
       }
-      console.log("🔴 Disconnected:", socket.id);
+      console.log("Disconnected:", socket.id);
     });
 
     socket.on("gameOver", ({ roomId, winnerColor }) => {

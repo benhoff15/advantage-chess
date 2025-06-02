@@ -1,4 +1,4 @@
-import { Chess, Square, Color, PieceSymbol, Move } from 'chess.js'; // Added PieceSymbol and Move
+import { Chess, Square, Color, PieceSymbol, Move } from 'chess.js';
 
 export interface CornerBlitzClientMove {
   from: string;

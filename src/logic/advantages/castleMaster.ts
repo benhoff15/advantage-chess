@@ -144,7 +144,7 @@ export function handleCastleMasterClient({
         }
 
         if (loadedSuccessfully) {
-          let specialMoveType = "castle-master"; // Generic, server might use more specific
+          let specialMoveType = "castle-master";
           if (isWhiteKingsideCastle) specialMoveType = "castle-master-wk";
           else if (isWhiteQueensideCastle) specialMoveType = "castle-master-wq";
           else if (isBlackKingsideCastle) specialMoveType = "castle-master-bk";
@@ -158,11 +158,6 @@ export function handleCastleMasterClient({
           return { moveData: castleMasterMoveData, advantageUsed: true };
         } else {
           // FEN loading failed, game was reverted. Indicate advantage wasn't successfully used.
-          // The 'advantageUsed: true' here means an *attempt* was made and pieces were moved,
-          // triggering the hasUsedCastleMaster.current = true in the component.
-          // If we want to only set `advantageUsed` if FEN is successfully loaded, this should be false.
-          // Given the original logic sets hasUsedCastleMaster.current = true *before* FEN loading,
-          // we'll keep advantageUsed: true to signify the attempt.
           return { moveData: null, advantageUsed: true }; 
         }
       }

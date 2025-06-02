@@ -2,7 +2,7 @@ import { Chess, Move, PieceSymbol, Color } from 'chess.js';
 
 interface ShieldWallParams {
   game: Chess; // Game state *after* the provisional move has been made
-  move: Move; // The move object from chess.js (contains color of player who made the move)
+  move: Move; // The move object from chess.js
   shieldPlayerColor: Color; // The color ('w' or 'b') of the player WITH the Shield Wall advantage
   shieldPlayerAdvantageActive: boolean; // Is Shield Wall the active advantage for this player?
 }
@@ -19,14 +19,13 @@ export function handleShieldWallServer({
   shieldPlayerAdvantageActive,
 }: ShieldWallParams): ShieldWallResult {
   if (!shieldPlayerAdvantageActive) {
-    // This check might be redundant if socketHandlers already confirms opponent has Shield Wall.
-    // However, it's a good safeguard.
+    // Safeguard to confirms opponent has Shield Wall.
     return { rejected: false };
   }
 
   // Shield Wall only protects pawns.
   if (!move.captured || move.captured !== 'p') {
-    return { rejected: false }; // Not a pawn capture.
+    return { rejected: false };
   }
 
   // Determine the color of the captured pawn.

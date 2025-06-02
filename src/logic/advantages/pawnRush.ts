@@ -51,11 +51,6 @@ export function handlePawnRushClient({
         if (standardMoveAttempt) {
           // If standard move succeeded, it means it was a regular two-square push from the 2nd/7th rank.
           // We can return this move, but the server will handle FEN.
-          // However, the original logic implies we might want to send a *special* move type
-          // if Pawn Rush advantage is active, even if it's a standard-looking move.
-          // For consistency with the original logic's else branch, we might want to undo this
-          // and proceed to manual FEN construction to send the special move type.
-          // Let's undo and proceed to manual for "pawn_rush_manual" emission.
           game.load(snapshot); // Undo the temporary standard move
           // Fall through to manual FEN construction for "pawn_rush_manual"
         }

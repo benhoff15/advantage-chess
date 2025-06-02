@@ -1,16 +1,11 @@
-import { Chess, Move, Square } from 'chess.js'; // Added Square
-// Assuming Advantage is defined in a way that's compatible.
-// If Advantage has specific values like 'pawn_rush', ensure it's handled.
+import { Chess, Move, Square } from 'chess.js';
 import { Advantage } from '../../../shared/types'; 
 
-// Define a more specific type for clientMoveData if possible,
-// based on the structure used in server/socketHandlers.ts
 interface ClientMovePayload {
   from: string;
   to: string;
   special?: string;
   color?: 'white' | 'black'; // Make color more specific
-  // Add other potential fields if they are relevant for pawn rush
 }
 
 interface PawnRushParams {
@@ -28,7 +23,7 @@ interface PawnRushResult {
 export function handlePawnRush({ 
   game, 
   clientMoveData, 
-  currentFen: fenBeforeThisMove, // Renamed for clarity
+  currentFen: fenBeforeThisMove,
   playerColor 
 }: PawnRushParams): PawnRushResult {
 
@@ -82,7 +77,7 @@ export function handlePawnRush({
 
     const moveResult: Move = {
       piece: 'p',
-      flags: 'b', // 'b' for two-square pawn push (standard flag, Pawn Rush is essentially this but from any rank)
+      flags: 'b', // 'b' for two-square pawn push
       from: clientMoveData.from as Square,
       to: clientMoveData.to as Square,
       color: pawnChessJsColor,
@@ -92,7 +87,7 @@ export function handlePawnRush({
       before: fenBeforeThisMove,
       after: finalFenAfterMove,
 
-      captured: undefined, // Pawn Rush as defined here is a non-capturing move
+      captured: undefined,
       promotion: undefined, // Pawn Rush is distinct from promotion
 
 

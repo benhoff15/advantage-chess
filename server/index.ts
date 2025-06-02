@@ -23,5 +23,5 @@ app.use("/stats", playerStatsRouter);
 setupSocketHandlers(io);
 
 server.listen(4000, () => {
-  console.log("🚀 Server running on http://localhost:4000");
+  console.log("Server running on http://localhost:4000");
 });

@@ -82,7 +82,6 @@ export function handleFocusedBishopClient({
   game.put({ type: 'b', color: playerChessJsColor }, toSquare);
 
   // Reconstruct FEN (turn, castling rights, en passant, halfmove, fullmove)
-  // This is a simplified FEN update; more robust would be like castleMaster
   let fenParts = game.fen().split(" ");
   // Update piece placement part based on current board state
    fenParts[0] = game.board().map(rank => {
@@ -101,8 +100,6 @@ export function handleFocusedBishopClient({
   fenParts[1] = playerChessJsColor === 'w' ? 'b' : 'w'; // Switch turn
   // Castling rights might change if a rook or king *could* have moved from 'to' or 'from', but for a bishop move, it's unlikely.
   // For simplicity, we assume castling rights are not affected by this specific bishop move.
-  // A truly robust solution would re-evaluate castling rights based on piece positions.
-  // Taking from snapshot for safety, assuming this specific move doesn't alter them.
   const originalSnapshotFenParts = snapshot.split(' ');
   fenParts[2] = originalSnapshotFenParts[2]; 
 
@@ -147,7 +144,7 @@ export function handleFocusedBishopClient({
 export interface OpponentFocusedBishopMove {
   from: string;
   to: string;
-  special?: 'focused_bishop'; // Should be 'focused_bishop'
+  special?: 'focused_bishop';
   color?: 'white' | 'black'; // Color of the opponent who made the move
 }
 

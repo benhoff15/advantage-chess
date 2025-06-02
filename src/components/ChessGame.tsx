@@ -1,14 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
-// Removed duplicate React import
 import { useParams } from "react-router-dom";
-// Removed duplicate useParams import
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
-import { Square } from "chess.js"; // Square is already imported
+import { Square } from "chess.js";
 import { socket } from "../socket";
 import { Advantage } from "../../shared/types";
 import { handlePawnRushClient, applyPawnRushOpponentMove } from "../logic/advantages/pawnRush";
-import { handleCastleMasterClient, applyCastleMasterOpponentMove } from "../logic/advantages/castleMaster"; // Added import
+import { handleCastleMasterClient, applyCastleMasterOpponentMove } from "../logic/advantages/castleMaster";
 import { 
   handleFocusedBishopClient, 
   applyFocusedBishopOpponentMove, 
@@ -19,7 +17,6 @@ import {
   handleCornerBlitzClient,
   applyCornerBlitzOpponentMove,
   PlayerRooksMovedState, // Type for the new ref state
-  // CornerBlitzClientMove, OpponentCornerBlitzMove (if needed for explicit typing)
 } from "../logic/advantages/cornerBlitz";
 
 export default function ChessGame() {
@@ -35,7 +32,7 @@ export default function ChessGame() {
   useEffect(() => {
     if (!roomId) return;
 
-    console.log("🧩 Joining room:", roomId);
+    console.log("Joining room:", roomId);
     socket.emit("joinRoom", roomId);
 
     socket.on("colorAssigned", (assignedColor: "white" | "black") => {
@@ -118,9 +115,8 @@ export default function ChessGame() {
 
         if (standardMove) {
           setFen(game.fen());
-          moveSuccessfullyApplied = true; // Though this is the default path if no special
+          moveSuccessfullyApplied = true; // this is the default path if no special
         } else {
-          // This is where the original error likely occurred for Focused Bishop
           console.error(
             `[ChessGame] Standard game.move() failed for received move. ` +
             `This should not happen if server validated. Move: ${JSON.stringify(receivedMove)}. Current FEN: ${game.fen()}`
@@ -164,7 +160,6 @@ export default function ChessGame() {
 
     socket.on("advantageAssigned", handleAdvantageAssigned);
 
-    // TEST: Verify client behavior when a move is deflected by Auto Deflect (alert, FEN revert).
     const handleMoveDeflected = (data?: { move?: any }) => {
       console.log("Move deflected by server:", data?.move);
       alert("Your move was deflected by the opponent's Auto Deflect advantage!");
@@ -210,14 +205,8 @@ export default function ChessGame() {
     winnerColor?: "white" | "black" | null;
   } | null>(null);
 
-  // findKingSquare function removed as it was unused.
-
   const hasUsedCastleMaster = useRef(false);
-  const hasUsedFocusedBishop = useRef(false); // New for Focused Bishop
-  // New state for Corner Blitz: initialize based on player color when color is known,
-  // or initialize with all possible rooks if color is not yet known.
-  // For simplicity, initialize empty and populate when color is known, or manage all.
-  // Let's manage all and let the handler logic use the color to pick the right ones.
+  const hasUsedFocusedBishop = useRef(false);
   const playerRooksMoved = useRef<PlayerRooksMovedState>({ 
     a1: false, h1: false, a8: false, h8: false 
   });
@@ -239,10 +228,7 @@ export default function ChessGame() {
     if (myAdvantage?.id === "pawn_rush" && color) { 
       const pawnRushMove = handlePawnRushClient({ game, from, to, color });
       if (pawnRushMove) {
-        // The game instance is already updated by handlePawnRushClient if successful
         move = pawnRushMove; 
-        // Note: setFen will be called later if move is successful.
-        // The 'move' object here is what gets sent to the server.
       }
     }
 
@@ -349,9 +335,6 @@ export default function ChessGame() {
         // IMPORTANT: Return early to prevent this move from being processed by standard game.move()
         return cornerBlitzResult.moveData; 
       } else if (cornerBlitzResult.rookMovedKey) {
-        // An attempt was made for a specific rook (rookMovedKey is not null), but it was invalid
-        // (e.g., path blocked, invalid target). No moveData was generated.
-        // Do not proceed to standard game.move().
         console.log(`[ChessGame] makeMove: Corner Blitz attempt for rook ${cornerBlitzResult.rookMovedKey} failed locally. Not sending to server or trying as standard move.`);
         return null; // Prevent standard move logic by returning null
       }

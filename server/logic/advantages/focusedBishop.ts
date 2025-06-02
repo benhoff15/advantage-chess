@@ -8,7 +8,7 @@ interface FocusedBishopServerClientMoveData {
   color: 'white' | 'black'; // Color of the player making the move
 }
 
-// Server-side state for tracking usage (to be stored per player in RoomState)
+// Server-side state for tracking usage
 export interface FocusedBishopAdvantageState {
   focusedBishopUsed: boolean;
 }
@@ -113,8 +113,6 @@ export function handleFocusedBishopServer({
   }).join('/');
   
   fenParts[1] = (playerColor === 'w') ? 'b' : 'w'; // Next turn
-  // Castling rights: Assume not affected by bishop move for simplicity. Robust check needed for general cases.
-  // fenParts[2] = game.fen().split(' ')[2]; // Keep original castling
   fenParts[3] = '-'; // En passant target reset
   const originalFenParts = currentFen.split(' ');
   const originalHalfmoves = parseInt(originalFenParts[4], 10) || 0;
@@ -144,7 +142,7 @@ export function handleFocusedBishopServer({
       before: currentFen,
       after: game.fen(),
       // isCapture, isPromotion, etc. functions
-      isCapture: () => !!game.get(toSquare), // Check if destination was occupied (shouldn't be for this logic)
+      isCapture: () => !!game.get(toSquare), // Check if destination was occupied
       isPromotion: () => false,
       isEnPassant: () => false,
       isKingsideCastle: () => false,

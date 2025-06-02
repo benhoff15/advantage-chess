@@ -2,7 +2,7 @@ import { Chess, Move } from 'chess.js';
 import { Advantage } from '../../../shared/types';
 
 interface AutoDeflectParams {
-  game: Chess; // The game state *after* the sender's move has been applied
+  game: Chess; // The game state after the sender's move has been applied
   moveResult: Move; // The move that was just made by the sender
   opponentAdvantage?: Advantage; // The advantage of the player who might deflect
 }

@@ -5,14 +5,13 @@ import { Advantage } from '../../../shared/types'; // Adjust path as necessary
  * Client-side check to see if a proposed move would be an illegal capture
  * against an opponent's Shield Wall.
  * NOTE: This function relies on knowing the opponent's advantage and the current
- * fullmove number, which ChessGame.tsx might need to be adapted to provide.
+ * fullmove number.
  */
 export interface CanCaptureOpponentPawnParams {
   game: Chess; // Current game state
   from: Square;
   to: Square;
   opponentAdvantage: Advantage | null | undefined;
-  // It's better to get the full FEN and derive move number, or pass it directly
   currentFullMoveNumber: number; 
 }
 
@@ -70,7 +69,6 @@ export interface HandleShieldWallClientParams {
   game: Chess;
   from: Square;
   to: Square;
-  // any other params like advantageState if ShieldWall had uses, etc.
 }
 export function handleShieldWallClient({ game, from, to }: HandleShieldWallClientParams) {
   // No special move data needs to be constructed for Shield Wall.

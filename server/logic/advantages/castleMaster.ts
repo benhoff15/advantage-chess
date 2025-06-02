@@ -1,17 +1,17 @@
-import { Chess, Move, Square, PieceSymbol } from 'chess.js'; // Added PieceSymbol for captured
+import { Chess, Move, Square, PieceSymbol } from 'chess.js';
 
 // Define a more specific type for clientMoveData based on its use for Castle Master
 interface CastleMasterClientMoveData {
   from: string; // King's starting square (e.g., 'e1')
   to: string;   // King's ending square (e.g., 'g1' or 'c1')
-  special?: string; // e.g., "castle-master-wk", "castle-master-bq"
+  special?: string;
   color: 'white' | 'black'; // Color of the player making the move - Marked as non-optional
   rookFrom: string; // Rook's starting square (e.g., 'h1' or 'a1') - Marked as non-optional
   rookTo: string;   // Rook's ending square (e.g., 'f1' or 'd1') - Marked as non-optional
 }
 
 interface CastleMasterParams {
-  game: Chess; // This is the serverGame instance
+  game: Chess;
   clientMoveData: CastleMasterClientMoveData;
   currentFen: string; // This is room.fen before the move (FEN before this Castle Master move)
   playerColor: 'w' | 'b'; // Color of the player making the move ('w' or 'b')
@@ -25,7 +25,7 @@ interface CastleMasterResult {
 export function handleCastleMaster({
   game, // This is the serverGame instance, should be loaded with currentFen by caller initially
   clientMoveData,
-  currentFen: fenBeforeThisMove, // Renamed for clarity, this is FEN *before* this special move
+  currentFen: fenBeforeThisMove,
   playerColor, 
 }: CastleMasterParams): CastleMasterResult {
 
@@ -40,7 +40,6 @@ export function handleCastleMaster({
   const castlingPlayerChessJsColor = playerColor;
 
   // Store the FEN *before* pieces are moved but *after* initial game state was set up by caller.
-  // This is effectively the same as fenBeforeThisMove if game was pristine.
   const internalBeforeFen = game.fen(); 
 
   game.remove(clientMoveData.from as Square);
@@ -84,7 +83,6 @@ export function handleCastleMaster({
     // game.load() updates the game state, including turn, move number, etc.
     game.load(constructedFenAfterMove); 
     
-    // Ensure the loaded FEN is what we expect. game.fen() is the canonical version.
     if (game.fen() !== constructedFenAfterMove) {
       console.warn(`[handleCastleMaster] FEN mismatch after Castle Master: Server game FEN "${game.fen()}" vs constructed FEN "${constructedFenAfterMove}". Using loaded FEN.`);
     }

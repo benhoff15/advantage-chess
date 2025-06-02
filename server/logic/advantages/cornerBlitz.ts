@@ -15,7 +15,7 @@ export interface CornerBlitzAdvantageRookState {
 }
 
 interface HandleCornerBlitzServerParams {
-  game: Chess; // Server's game instance, IS ALREADY LOADED WITH currentFen by caller (socketHandlers)
+  game: Chess;
   clientMoveData: CornerBlitzServerClientMoveData;
   currentFen: string; // FEN before this move attempt (used for reverting and reference)
   playerColor: 'w' | 'b'; // Determined by socketHandlers
@@ -114,8 +114,7 @@ export function handleCornerBlitzServer({
   // The 'game' instance IS the main serverGame from socketHandlers, loaded with currentFen.
   // Perform operations, then if anything fails or FEN is bad, load(currentFen) to revert.
 
-  game.remove(fromSq);             // Remove rook from starting square
-  // game.remove(pawnSquareToJump);   // Remove the jumped friendly pawn
+  game.remove(fromSq); // Remove rook from starting square
   
   // If 'toSq' had an opponent's piece, it's captured. chess.js 'put' handles this.
   game.put({ type: 'r', color: playerColor }, toSq); // Place rook on destination
@@ -123,9 +122,6 @@ export function handleCornerBlitzServer({
   // Construct FEN based on original FEN parts and new board state
   const originalFenParts = currentFen.split(' ');
   let newFenParts = game.fen().split(' '); // Base this on game.fen() for piece placement
-
-  // [0] Piece placement - already handled by game.fen() after remove/put.
-  // newFenParts[0] is from game.fen()
 
   // [1] Active color
   newFenParts[1] = playerColor === 'w' ? 'b' : 'w';
