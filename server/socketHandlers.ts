@@ -16,6 +16,8 @@ import {
 } from "./logic/advantages/cornerBlitz";
 import { selectProtectedPiece } from "./logic/advantages/silentShield";
 import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
+import { validateLightningCaptureServerMove } from './logic/advantages/lightningCapture';
+import { LightningCaptureState } from "../shared/types";
 
 console.log("setupSocketHandlers loaded");
 
@@ -51,6 +53,8 @@ type RoomState = {
   blackRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
   whiteRoyalEscortState?: RoyalEscortState;
   blackRoyalEscortState?: RoyalEscortState;
+  whiteLightningCaptureState?: LightningCaptureState;
+  blackLightningCaptureState?: LightningCaptureState;
   silentShieldPieces?: {
     white: ShieldedPieceInfo | null;
     black: ShieldedPieceInfo | null;
@@ -105,7 +109,9 @@ export function setupSocketHandlers(io: Server) {
       socket.join(roomId);
       console.log(`${socket.id} is joining room ${roomId}`);
       
-      if (!rooms[roomId]) {
+      let room = rooms[roomId]; // Declare room here
+
+      if (!room) { // Check if room object exists
         rooms[roomId] = { 
           fen: new Chess().fen(),
           // Initialize advantage states
@@ -114,26 +120,35 @@ export function setupSocketHandlers(io: Server) {
           // Initialize other new states as needed
           whiteRooksMoved: { a1: false, h1: false, a8: false, h8: false }, 
           blackRooksMoved: { a1: false, h1: false, a8: false, h8: false }, 
-          // Royal Escort states will be initialized when advantages are assigned
+          whiteRoyalEscortState: undefined, // Will be set if advantage is assigned
+          blackRoyalEscortState: undefined,
+          whiteLightningCaptureState: { used: false }, // Default init
+          blackLightningCaptureState: { used: false }, // Default init
           silentShieldPieces: { white: null, black: null },
         };
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen} and default advantage states.`);
+        room = rooms[roomId]; // Assign the newly created room to the local variable
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
       } else {
-        // If room exists but a player slot might be rejoining, ensure states are there
-        if (!rooms[roomId].silentShieldPieces) {
-          rooms[roomId].silentShieldPieces = { white: null, black: null };
-        }
-        if (rooms[roomId].white) {
-          if (!rooms[roomId].whiteFocusedBishopState) rooms[roomId].whiteFocusedBishopState = { focusedBishopUsed: false };
-          if (!rooms[roomId].whiteRooksMoved) rooms[roomId].whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
-        }
-        if (rooms[roomId].black) {
-          if (!rooms[roomId].blackFocusedBishopState) rooms[roomId].blackFocusedBishopState = { focusedBishopUsed: false };
-          if (!rooms[roomId].blackRooksMoved) rooms[roomId].blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
-        }
+        // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
+        if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
+        if (!room.whiteLightningCaptureState) room.whiteLightningCaptureState = { used: false };
+        if (!room.blackLightningCaptureState) room.blackLightningCaptureState = { used: false };
+        if (!room.whiteFocusedBishopState) room.whiteFocusedBishopState = { focusedBishopUsed: false };
+        if (!room.blackFocusedBishopState) room.blackFocusedBishopState = { focusedBishopUsed: false };
+        if (!room.whiteRooksMoved) room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
+        if (!room.blackRooksMoved) room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
+        // Royal Escort states are typically initialized upon advantage assignment, but good to check
+        if (room.whiteAdvantage?.id === "royal_escort" && !room.whiteRoyalEscortState) room.whiteRoyalEscortState = { usedCount: 0};
+        if (room.blackAdvantage?.id === "royal_escort" && !room.blackRoyalEscortState) room.blackRoyalEscortState = { usedCount: 0};
       }
       
-      const room = rooms[roomId]; 
+      // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
+      // However, the logic above ensures 'room' is assigned. A further check might be redundant but safe.
+      if (!room) {
+        console.error(`[joinRoom] Room object for ${roomId} is unexpectedly null after initialization block.`);
+        socket.emit("serverError", { message: "Failed to initialize or retrieve room data." });
+        return;
+      }
 
       if (!room.white) {
         room.white = socket.id;
@@ -168,6 +183,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteRoyalEscortState = { usedCount: 0 };
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
+            } else if (room.whiteAdvantage.id === "lightning_capture") {
+                room.whiteLightningCaptureState = { used: false }; // Initialize
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -188,13 +207,17 @@ export function setupSocketHandlers(io: Server) {
                 room.blackRoyalEscortState = { usedCount: 0 };
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Royal Escort, state initialized.`);
+            } else if (room.blackAdvantage.id === "lightning_capture") {
+                room.blackLightningCaptureState = { used: false }; // Initialize
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Lightning Capture, state initialized.`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
         }
         // ---- END Advantage Assignment and State Init ----
 
-        io.to(roomId).emit("opponentJoined"); 
+        io.to(roomId).emit("opponentJoined");
       } else {
         socket.emit("roomFull");
         console.log(`Room ${roomId} is full`);
@@ -244,26 +267,32 @@ export function setupSocketHandlers(io: Server) {
         let currentPlayerAdvantageState_FB: FocusedBishopAdvantageState | undefined;
         let currentPlayerRooksMoved_CB: CornerBlitzAdvantageRookState | undefined;
         let currentPlayerRoyalEscortState_RE: RoyalEscortState | undefined;
+        let currentPlayerLightningCaptureState_LC: LightningCaptureState | undefined;
+
 
         if (senderColor === 'white') {
             currentPlayerAdvantageState_FB = room.whiteFocusedBishopState;
             currentPlayerRooksMoved_CB = room.whiteRooksMoved;
             currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState;
+            currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState;
         } else if (senderColor === 'black') {
             currentPlayerAdvantageState_FB = room.blackFocusedBishopState;
             currentPlayerRooksMoved_CB = room.blackRooksMoved;
             currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState;
+            currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState;
         }
         
-        // Fallback initialization for states if they are somehow missing (should be set during joinRoom)
+        // Fallback initialization for states if they are somehow missing
         if (senderColor === 'white') {
             if (room.whiteAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.whiteFocusedBishopState = { focusedBishopUsed: false };
-            if (room.whiteAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false }; // Note: a8/h8 for white is unusual but for completeness
+            if (room.whiteAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
             if (room.whiteAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState = { usedCount: 0 };
+            if (room.whiteAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState = { used: false };
         } else if (senderColor === 'black') {
             if (room.blackAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.blackFocusedBishopState = { focusedBishopUsed: false };
-            if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false }; // Note: a1/h1 for black is unusual
+            if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
             if (room.blackAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState = { usedCount: 0 };
+            if (room.blackAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState = { used: false };
         }
 
         // ---- Start of Silent Shield Capture Prevention ----
@@ -426,22 +455,62 @@ export function setupSocketHandlers(io: Server) {
             });
             // moveResult remains null
           }
+        } else if (receivedMove.special === "lightning_capture") {
+          const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+          if (!currentPlayerLightningCaptureState_LC || playerAdvantage?.id !== "lightning_capture") {
+            socket.emit("invalidMove", { message: "Lightning Capture state not found or advantage mismatch.", move: clientMoveData });
+            return;
+          }
+          const validationGame = new Chess(originalFenBeforeAttempt!); // Use originalFen for validation
+          const lcResult = validateLightningCaptureServerMove({
+            game: validationGame, // Use temporary validation game instance
+            clientMoveData: receivedMove as any, // Cast as any because ClientMovePayload might not perfectly match
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
+            lightningCaptureState: currentPlayerLightningCaptureState_LC,
+          });
+
+          moveResult = lcResult.moveResult; // This is the Move object for the *second* move of LC
+
+          if (moveResult && lcResult.nextFen) {
+            // Validation successful, update the main serverGame and room FEN
+            serverGame.load(lcResult.nextFen); // Load the final state into serverGame
+            room.fen = lcResult.nextFen;     // Update authoritative room FEN
+
+            // Mark advantage as used
+            currentPlayerLightningCaptureState_LC.used = true;
+            if (senderColor === 'white') {
+              room.whiteLightningCaptureState = currentPlayerLightningCaptureState_LC;
+            } else {
+              room.blackLightningCaptureState = currentPlayerLightningCaptureState_LC;
+            }
+             console.log(`[sendMove] Lightning Capture by ${senderColor} successful. New FEN: ${room.fen}. Advantage marked used.`);
+          } else {
+            // Validation failed, serverGame remains at originalFenBeforeAttempt
+            // No need to serverGame.load(originalFenBeforeAttempt!) as validationGame was used.
+             console.warn(`[sendMove] Lightning Capture by ${senderColor} failed validation: ${lcResult.error}`);
+            socket.emit("invalidMove", {
+              message: lcResult.error || "Lightning Capture move invalid or illegal.",
+              move: clientMoveData
+            });
+            moveResult = null; // Ensure moveResult is null on failure
+          }
         } else { 
           // Standard move attempt
-        try {
-          moveResult = serverGame.move({ 
-            from: receivedMove.from,
-            to: receivedMove.to,
-            promotion: receivedMove.promotion as any
-          });
-      } catch (err) {
-        console.warn(`[sendMove] Chess.js threw an error on move attempt:`, err);
-        socket.emit("invalidMove", {
-          message: "Move rejected by chess engine (internal validation).",
-          move: clientMoveData
-        });
-        return;
-      }
+          try {
+            moveResult = serverGame.move({ 
+              from: receivedMove.from,
+              to: receivedMove.to,
+              promotion: receivedMove.promotion as any
+            });
+          } catch (err) {
+            console.warn(`[sendMove] Chess.js threw an error on move attempt:`, err);
+            socket.emit("invalidMove", {
+              message: "Move rejected by chess engine (internal validation).",
+              move: clientMoveData
+            });
+            return;
+          }
 
           if (moveResult) {
             // Shield Wall Check - only if the standard move itself was valid

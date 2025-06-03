@@ -23,12 +23,11 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { 
-    id: "corner_blitz",
-    name: "Corner Blitz",
-    description: "Your rooks may leap over pawns on their first move.",
-    rarity: "common"
-  },
+{ id: "lightning_capture",
+  name: "Lightning Capture",
+  description: "One piece captures and instantly moves again. Can be used only once. Must be activated before use.",
+  rarity: "rare"
+},
   { 
     id: "royal_escort",
     name: "Royal Escort",

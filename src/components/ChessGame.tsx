@@ -24,7 +24,12 @@ import {
   applyRoyalEscortOpponentMove,
   OpponentRoyalEscortMove, // Added import for type assertion
 } from "../logic/advantages/royalEscort";
-import { RoyalEscortState } from "../../shared/types";
+import { RoyalEscortState, LightningCaptureState } from "../../shared/types";
+import {
+  handleLightningCaptureClient,
+  applyLightningCaptureOpponentMove,
+} from "../logic/advantages/lightningCapture";
+import { Move } from "chess.js";
 
 export default function ChessGame() {
   const { roomId } = useParams(); //This gets /game/:roomId
@@ -48,6 +53,12 @@ export default function ChessGame() {
     a1: false, h1: false, a8: false, h8: false 
   });
   const [royalEscortState, setRoyalEscortState] = useState<RoyalEscortState | null>(null);
+  const [lightningCaptureState, setLightningCaptureState] = useState<LightningCaptureState>({ used: false });
+  const [isLightningCaptureActive, setIsLightningCaptureActive] = useState(false);
+  const [isAwaitingSecondLcMove, setIsAwaitingSecondLcMove] = useState(false);
+  const [lcSecondMoveResolver, setLcSecondMoveResolver] = useState<{ resolve: (to: string | null) => void } | null>(null);
+  const [lcFirstMoveDetails, setLcFirstMoveDetails] = useState<{ from: string; to: string } | null>(null);
+  const [lcPossibleSecondMoves, setLcPossibleSecondMoves] = useState<string[]>([]);
 
   useEffect(() => {
     if (myAdvantage?.id === "royal_escort") {
@@ -55,7 +66,22 @@ export default function ChessGame() {
     } else {
       setRoyalEscortState(null); // Reset if advantage changes
     }
-  }, [myAdvantage]);
+    if (myAdvantage?.id === "lightning_capture") {
+      setLightningCaptureState({ used: false }); 
+      setIsLightningCaptureActive(false);
+      setIsAwaitingSecondLcMove(false);
+    } else {
+      // Reset LC states if advantage is not LC
+      setIsLightningCaptureActive(false);
+      setIsAwaitingSecondLcMove(false);
+      setLcPossibleSecondMoves([]);
+      setLcFirstMoveDetails(null);
+      if (lcSecondMoveResolver) {
+        lcSecondMoveResolver.resolve(null); // Resolve any pending prompt
+        setLcSecondMoveResolver(null);
+      }
+    }
+  }, [myAdvantage, lcSecondMoveResolver]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -99,10 +125,25 @@ export default function ChessGame() {
         console.log("[ChessGame handleReceiveMove] Server sent updatedShieldedPiece:", updatedShieldedPieceFromServer);
       }
 
+      // If this client is awaiting a second LC move, it should not process incoming moves from opponent.
+      // This can happen in rare race conditions. Server should ultimately resolve.
+      if (isAwaitingSecondLcMove) {
+        console.warn("[ChessGame handleReceiveMove] Ignoring opponent move while awaiting second LC move.");
+        return;
+      }
+
       const isEcho = receivedMove.color === color;
 
       if (isEcho) {
         console.log("[ChessGame handleReceiveMove] Detected ECHO of my own move.");
+        if (receivedMove.special === "lightning_capture") {
+          // Own LC move confirmed by server, update state
+          setLightningCaptureState({ used: true });
+          setIsLightningCaptureActive(false); // Deactivate after successful use
+          setIsAwaitingSecondLcMove(false);
+          setLcFirstMoveDetails(null);
+          setLcPossibleSecondMoves([]);
+        }
         // Process potential state updates for echo (e.g. Silent Shield update after own move)
         if (updatedShieldedPieceFromServer && myShieldedPieceInfo && updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id) {
           console.log(`[ChessGame handleReceiveMove ECHO] Updating myShieldedPieceInfo from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`);
@@ -116,7 +157,17 @@ export default function ChessGame() {
       let moveSuccessfullyApplied = false;
       const currentFenBeforeOpponentMove = game.fen(); 
 
-      if (receivedMove.special === "royal_escort") {
+      if (receivedMove.special === "lightning_capture") {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Lightning Capture.");
+        const gameChanged = applyLightningCaptureOpponentMove({ game, receivedMove: receivedMove as any });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Lightning Capture move.");
+          socket.emit("requestFenSync", { roomId });
+        }
+      } else if (receivedMove.special === "royal_escort") {
         console.log("[ChessGame handleReceiveMove] Opponent's move is Royal Escort.");
         const gameChanged = applyRoyalEscortOpponentMove({ game, receivedMove: receivedMove as OpponentRoyalEscortMove });
         if (gameChanged) {
@@ -286,21 +337,56 @@ export default function ChessGame() {
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
   // handleAdvantageAssigned, and the logging in cleanup depend on their current values.
 
-  // const [revealedAdvantages, setRevealedAdvantages] = useState<{
+  const promptSecondMove = React.useCallback(
+  (
+    gameInstanceAfterFirstMove: Chess, // Can be used to display board state to user
+    firstMoveFrom: string,
+    firstMoveTo: string,
+    possibleMoves: Array<Move>
+  ): Promise<string | null> => {
+    return new Promise((resolve) => {
+      // Log the FEN of the game instance passed, to ensure it's after the first move
+      console.log("promptSecondMove: Game FEN after first move:", gameInstanceAfterFirstMove.fen());
+      console.log("promptSecondMove: Possible second moves:", possibleMoves.map(m => m.to));
+
+      setLcPossibleSecondMoves(possibleMoves.map((m) => m.to));
+      setIsAwaitingSecondLcMove(true);
+      setLcFirstMoveDetails({ from: firstMoveFrom, to: firstMoveTo });
+      setLcSecondMoveResolver({ resolve }); // Store the resolve function
+    });
+  },
+  [setLcPossibleSecondMoves, setIsAwaitingSecondLcMove, setLcFirstMoveDetails, setLcSecondMoveResolver]
+);
+
+
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
+    const myColor = color;
 
     const turn = game.turn();
-    if ((turn === "w" && color !== "white") || (turn === "b" && color !== "black")) {
+    if ((turn === "w" && myColor !== "white") || (turn === "b" && myColor !== "black")) {
       return null;
     }
 
     // Capture FEN before any move attempt for potential server-side deflection
     fenSnapshotBeforeMove.current = game.fen();
 
-    // Client-side check for capturing opponent's shielded piece (placeholder for now)
-    // This requires opponentShieldedPieceInfo to be populated, which is not done in this step.
-    // For now, opponentShieldedPieceInfo will be null.
+    // Handling the second move of Lightning Capture
+    if (isAwaitingSecondLcMove && lcSecondMoveResolver && lcFirstMoveDetails) {
+      console.log(`[ChessGame makeMove] Handling second LC move. From: ${lcFirstMoveDetails.to}, To: ${to}`);
+      // Check if 'to' is a valid second move destination
+      if (!lcPossibleSecondMoves.includes(to)) {
+        alert("Invalid second move for Lightning Capture. Click a highlighted square.");
+        return null;
+      }
+      lcSecondMoveResolver.resolve(to);
+      return;
+    }
+
+    if (isLightningCaptureActive && !isAwaitingSecondLcMove) {
+
+    }
+        
     const opponentShieldedPieceInfo: ShieldedPieceInfo | null = null; // Placeholder
     if (isAttemptToCaptureShieldedPieceClient(to, opponentShieldedPieceInfo, game)) {
       alert("Client check: This piece is protected by Silent Shield and cannot be captured.");
@@ -309,13 +395,73 @@ export default function ChessGame() {
 
     let move: any; // This will hold the move object to be sent or processed
 
+    // Lightning Capture Activation
+    if (myAdvantage?.id === "lightning_capture" && isLightningCaptureActive && !lightningCaptureState.used && myColor) {
+      console.log(`[ChessGame makeMove] Attempting Lightning Capture from ${from} to ${to}`);
+      const originalFenForLC = fenSnapshotBeforeMove.current; // Use the FEN before any move
+
+      // Ensure game instance is pristine for handleLightningCaptureClient
+      const gameInstanceForLC = new Chess(originalFenForLC);
+
+      handleLightningCaptureClient({
+        game: gameInstanceForLC, // Use a fresh instance or ensure game is reset
+        originalFen: originalFenForLC,
+        from,
+        to,
+        color: myColor,
+        lightningCaptureState,
+        promptSecondMove,
+        setFen, // Pass setFen to allow LC logic to update board for first move
+      })
+        .then((result) => {
+          setIsLightningCaptureActive(false); // Always deactivate after attempt
+           setIsAwaitingSecondLcMove(false); // Reset awaiting state
+           setLcPossibleSecondMoves([]);
+           setLcFirstMoveDetails(null);
+           setLcSecondMoveResolver(null); // Clear resolver
+
+           if (result.attempted && result.moveData) {
+            console.log("[ChessGame makeMove] Lightning Capture successful, emitting move:", result.moveData);
+            // FEN is already updated by handleLightningCaptureClient via setFen
+            socket.emit("sendMove", { roomId, move: result.moveData });
+            // Server will confirm and then client will set lightningCaptureState.used = true via echo
+
+            // Check game over states locally after successful LC
+            const finalGame = new Chess(gameInstanceForLC.fen()); // gameInstanceForLC was mutated
+            if (finalGame.isCheckmate()) {
+              const winner = finalGame.turn() === "w" ? "black" : "white";
+              setGameOverMessage(`${winner} wins by checkmate`);
+              socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate using Lightning Capture!`, winnerColor: myColor });
+            } else if (finalGame.isDraw()) {
+              setGameOverMessage("Draw");
+              socket.emit("gameDraw", { roomId, message: "Draw after Lightning Capture!" });
+            }
+          } else {
+            console.log("[ChessGame makeMove] Lightning Capture attempt failed or was cancelled.");
+            game.load(originalFenForLC);
+            setFen(originalFenForLC);
+          }
+        })
+        .catch(error => {
+          console.error("Error during Lightning Capture:", error);
+          setIsLightningCaptureActive(false);
+          setIsAwaitingSecondLcMove(false);
+          setLcPossibleSecondMoves([]);
+          setLcFirstMoveDetails(null);
+          setLcSecondMoveResolver(null);
+          game.load(originalFenForLC); // Revert to original FEN on error
+          setFen(originalFenForLC);
+        });
+      return;
+    }
+
     // Royal Escort Logic
-    if (myAdvantage?.id === "royal_escort" && royalEscortState && color) {
+    if (myAdvantage?.id === "royal_escort" && royalEscortState && myColor) {
       const royalEscortResult = handleRoyalEscortClient({
         game,
         from,
         to,
-        color,
+        color: myColor,
         royalEscortState,
       });
 
@@ -332,7 +478,7 @@ export default function ChessGame() {
         if (game.isCheckmate()) {
           const winner = game.turn() === "w" ? "black" : "white";
           setGameOverMessage(`${winner} wins by checkmate`);
-          socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
+          socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate!`, winnerColor: myColor });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
           socket.emit("gameDraw", { roomId, message: "Draw!" });
@@ -355,8 +501,8 @@ export default function ChessGame() {
     }
 
     // Pawn Rush logic
-    if (!move && myAdvantage?.id === "pawn_rush" && color) { 
-      const pawnRushMove = handlePawnRushClient({ game, from, to, color });
+    if (!move && myAdvantage?.id === "pawn_rush" && myColor) { 
+      const pawnRushMove = handlePawnRushClient({ game, from, to, color: myColor });
       if (pawnRushMove) {
         move = pawnRushMove; 
       }
@@ -364,8 +510,8 @@ export default function ChessGame() {
 
     // Castle Master logic
     // Note: Added '!move &&' to ensure it doesn't try if Pawn Rush already prepared a move.
-    if (!move && myAdvantage?.id === "castle_master" && !hasUsedCastleMaster.current && color) {
-      const castleMasterResult = handleCastleMasterClient({ game, from, to, color });
+    if (!move && myAdvantage?.id === "castle_master" && !hasUsedCastleMaster.current && myColor) {
+     const castleMasterResult = handleCastleMasterClient({ game, from, to, color: myColor });
 
       if (castleMasterResult.moveData) {
         setFen(game.fen()); 
@@ -406,12 +552,12 @@ export default function ChessGame() {
 
     // Focused Bishop Logic
     // Note: Added '!move &&'
-    if (!move && myAdvantage?.id === "focused_bishop" && !hasUsedFocusedBishop.current && color) {
+    if (!move && myAdvantage?.id === "focused_bishop" && !hasUsedFocusedBishop.current && myColor) {
       const focusedBishopResult = handleFocusedBishopClient({
         game,
         from,
         to,
-        color,
+        color: myColor,
         hasUsedFocusedBishop: hasUsedFocusedBishop.current,
       });
       if (focusedBishopResult.moveData) {
@@ -451,13 +597,13 @@ export default function ChessGame() {
 
     // Corner Blitz Logic
     // Note: Added '!move &&'
-    if (!move && myAdvantage?.id === "corner_blitz" && color) {
+    if (!move && myAdvantage?.id === "corner_blitz" && myColor) {
       console.log("[ChessGame] makeMove: Checking Corner Blitz for", { from, to });
       const cornerBlitzResult = handleCornerBlitzClient({
         game,
         from,
         to,
-        color,
+        color: myColor,
         playerRooksMoved: playerRooksMoved.current,
       });
       console.log("[ChessGame] makeMove: Corner Blitz result:", cornerBlitzResult);
@@ -517,13 +663,16 @@ export default function ChessGame() {
       const isPawnPromotion = piece?.type === "p" &&
         ((piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1"));
       try {
-        const standardMoveAttempt = game.move({
+        const gameForStandardMove = new Chess(fenSnapshotBeforeMove.current);
+        const standardMoveAttempt = gameForStandardMove.move({
           from,
           to,
           ...(isPawnPromotion ? { promotion: "q" } : {})
         });
         if (standardMoveAttempt) {
           move = standardMoveAttempt;
+          game.load(gameForStandardMove.fen());
+          setFen(game.fen());
         } else {
            console.log("[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).");
            return null;
@@ -566,6 +715,20 @@ export default function ChessGame() {
     return move; // Return the move object (or null if all attempts failed)
   };
 
+   const handleCancelLc = () => {
+    if (lcSecondMoveResolver) {
+      lcSecondMoveResolver.resolve(null); // This will trigger the cancel path in handleLightningCaptureClient
+    }
+    // Reset all LC UI states
+    setIsLightningCaptureActive(false);
+    setIsAwaitingSecondLcMove(false);
+    setLcPossibleSecondMoves([]);
+    setLcFirstMoveDetails(null);
+    setLcSecondMoveResolver(null);
+    game.load(fenSnapshotBeforeMove.current);
+    setFen(fenSnapshotBeforeMove.current);
+   };
+
   return (
     <div style={{ padding: "20px", maxWidth: 600, margin: "0 auto" }}>
       <h2>Advantage Chess — Room <code>{roomId}</code></h2>
@@ -575,24 +738,61 @@ export default function ChessGame() {
         {opponentConnected ? "Opponent connected ✅" : "Waiting for opponent... ⏳"}
       </p>
 
-      <Chessboard
-        position={fen}
-        onPieceDrop={(from, to) => !!makeMove(from, to)}
-        boardWidth={500}
-        boardOrientation={color === "black" ? "black" : "white"}
-      />
+      {myAdvantage && (
+        <div style={{ margin: "10px 0", padding: "10px", background: "#f0f0f0", borderRadius: "4px" }}>
+          <p>Your Advantage: <strong>{myAdvantage.name}</strong></p>
+          {myAdvantage.id === "lightning_capture" && !lightningCaptureState.used && (
+            <>
+              <button
+                onClick={() => setIsLightningCaptureActive(!isLightningCaptureActive)}
+                disabled={lightningCaptureState.used || isAwaitingSecondLcMove}
+                style={{ marginRight: "10px", background: isLightningCaptureActive ? "lightblue" : "" }}
+              >
+                {isLightningCaptureActive ? "Deactivate Lightning Capture" : "Activate Lightning Capture"}
+              </button>
+              {isLightningCaptureActive && !isAwaitingSecondLcMove && <p>Click a piece to make the first (capture) move.</p>}
+            </>
+          )}
+          {myAdvantage.id === "lightning_capture" && lightningCaptureState.used && (
+            <p><em>Lightning Capture has been used.</em></p>
+          )}
+           {isAwaitingSecondLcMove && lcFirstMoveDetails && (
+            <div>
+              <p>Lightning Capture: First move from {lcFirstMoveDetails.from} to {lcFirstMoveDetails.to} made.</p>
+              <p><strong>Select the second move for the piece on {lcFirstMoveDetails.to}. Click a highlighted square.</strong></p>
+              <button onClick={handleCancelLc}>Cancel Lightning Capture</button>
+            </div>
+          )}
+        </div>
+      )}
+      
+      <div style={{ position: 'relative' }}>
+        <Chessboard
+          position={fen}
+          onPieceDrop={(from, to) => !!makeMove(from, to)}
+          boardWidth={500}
+          boardOrientation={color === "black" ? "black" : "white"}
+          customSquareStyles={
+            isAwaitingSecondLcMove && lcFirstMoveDetails
+              ? {
+                  ...lcPossibleSecondMoves.reduce((acc, sq) => ({ ...acc, [sq]: { background: "rgba(255, 255, 0, 0.4)" } }), {}),
+                  [lcFirstMoveDetails.to]: { background: "rgba(0, 255, 0, 0.4)" } // Highlight the piece to move again
+                }
+              : {}
+          }
+        />
+      </div>
+
 
       {gameOverMessage && (
         <div style={{ marginTop: 20, padding: 20, backgroundColor: "#222", color: "#fff", textAlign: "center", borderRadius: 8 }}>
           <h3>{gameOverMessage}</h3>
-
           {revealedAdvantages && (
             <>
               <p><strong>Your Advantage:</strong> {color === "white" ? revealedAdvantages.whiteAdvantage?.name : revealedAdvantages.blackAdvantage?.name}</p>
               <p><strong>Opponent's Advantage:</strong> {color === "white" ? revealedAdvantages.blackAdvantage?.name : revealedAdvantages.whiteAdvantage?.name}</p>
             </>
           )}
-
           <button
             onClick={() => window.location.reload()}
             style={{ marginTop: 10, padding: "8px 16px", fontSize: "1rem", borderRadius: 6, backgroundColor: "#fff", color: "#000", border: "none", cursor: "pointer" }}

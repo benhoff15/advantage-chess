@@ -19,7 +19,12 @@ export interface RoyalEscortState {
   usedCount: number;
 }
 
+export interface LightningCaptureState {
+  used: boolean;
+}
+
 export interface PlayerAdvantageStates {
   royalEscort?: RoyalEscortState;
+  lightningCapture?: LightningCaptureState;
   // Add other advantage states here as needed
 }
