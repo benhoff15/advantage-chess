@@ -6,7 +6,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "pawn_rush", name: "Pawn Rush", description: "All your pawns can move 2 squares at any time.", rarity: "common" }, // done
   { id: "castle_master", name: "Castle Master", description: "You may castle even if the king or rook has moved once.", rarity: "common" }, // done
   { id: "auto_deflect", name: "Auto-Deflect", description: "Your king cannot be checked by knights.", rarity: "common" }, // done
-  { id: "royal_escort", name: "Royal Escort", description: "Your king may move two squares in any direction once.", rarity: "common" },
+  { id: "royal_escort", name: "Royal Escort", description: "Your king may move two squares in any direction up to 3 times per game.", rarity: "common" },
   { id: "time_bubble", name: "Time Bubble", description: "Freeze your clock for 10 seconds once automatically.", rarity: "common" },
   { id: "corner_blitz", name: "Corner Blitz", description: "Your rooks may leap over pawns on their first move.", rarity: "common"}, // done
   { id: "shield_wall", name: "Shield Wall", description: "Your pawns cannot be captured during the first 5 moves.", rarity: "common"}, // done

@@ -14,3 +14,12 @@ export interface ShieldedPieceInfo {
   currentSquare: string; // e.g., 'd4' (updated as the piece moves)
   color: 'w' | 'b';
 }
+
+export interface RoyalEscortState {
+  usedCount: number;
+}
+
+export interface PlayerAdvantageStates {
+  royalEscort?: RoyalEscortState;
+  // Add other advantage states here as needed
+}

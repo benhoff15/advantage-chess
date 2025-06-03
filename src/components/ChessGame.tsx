@@ -19,6 +19,12 @@ import {
   applyCornerBlitzOpponentMove,
   PlayerRooksMovedState, // Type for the new ref state
 } from "../logic/advantages/cornerBlitz";
+import {
+  handleRoyalEscortClient,
+  applyRoyalEscortOpponentMove,
+  OpponentRoyalEscortMove, // Added import for type assertion
+} from "../logic/advantages/royalEscort";
+import { RoyalEscortState } from "../../shared/types";
 
 export default function ChessGame() {
   const { roomId } = useParams(); //This gets /game/:roomId
@@ -41,6 +47,15 @@ export default function ChessGame() {
   const playerRooksMoved = useRef<PlayerRooksMovedState>({ 
     a1: false, h1: false, a8: false, h8: false 
   });
+  const [royalEscortState, setRoyalEscortState] = useState<RoyalEscortState | null>(null);
+
+  useEffect(() => {
+    if (myAdvantage?.id === "royal_escort") {
+      setRoyalEscortState({ usedCount: 0 });
+    } else {
+      setRoyalEscortState(null); // Reset if advantage changes
+    }
+  }, [myAdvantage]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -101,7 +116,18 @@ export default function ChessGame() {
       let moveSuccessfullyApplied = false;
       const currentFenBeforeOpponentMove = game.fen(); 
 
-      if (receivedMove.special?.startsWith("castle-master")) {
+      if (receivedMove.special === "royal_escort") {
+        console.log("[ChessGame handleReceiveMove] Opponent's move is Royal Escort.");
+        const gameChanged = applyRoyalEscortOpponentMove({ game, receivedMove: receivedMove as OpponentRoyalEscortMove });
+        if (gameChanged) {
+          setFen(game.fen());
+          moveSuccessfullyApplied = true;
+        } else {
+          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Royal Escort move.");
+          // Request a FEN sync from server or handle error appropriately
+          socket.emit("requestFenSync", { roomId });
+        }
+      } else if (receivedMove.special?.startsWith("castle-master")) {
         console.log("[ChessGame handleReceiveMove] Opponent's move is Castle Master.");
         const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
         if (gameChanged) {
@@ -283,8 +309,53 @@ export default function ChessGame() {
 
     let move: any; // This will hold the move object to be sent or processed
 
+    // Royal Escort Logic
+    if (myAdvantage?.id === "royal_escort" && royalEscortState && color) {
+      const royalEscortResult = handleRoyalEscortClient({
+        game,
+        from,
+        to,
+        color,
+        royalEscortState,
+      });
+
+      if (royalEscortResult.moveData) {
+        setFen(game.fen());
+        socket.emit("sendMove", { roomId, move: royalEscortResult.moveData });
+
+        setRoyalEscortState(prevState => ({
+          ...prevState!,
+          usedCount: prevState!.usedCount + 1,
+        }));
+        
+        // Game over checks
+        if (game.isCheckmate()) {
+          const winner = game.turn() === "w" ? "black" : "white";
+          setGameOverMessage(`${winner} wins by checkmate`);
+          socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+          socket.emit("gameDraw", { roomId, message: "Draw!" });
+        } else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+          socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+        } else if (game.isThreefoldRepetition()) {
+          setGameOverMessage("Draw by Threefold Repetition");
+           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+        } else if (game.isInsufficientMaterial()) {
+           setGameOverMessage("Draw by Insufficient Material");
+           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+        }
+        return royalEscortResult.moveData;
+      } else if (royalEscortResult.attempted) {
+        // Invalid Royal Escort attempt (e.g., puts king in check)
+        return null; 
+      }
+      // If not attempted, fall through to other advantages / standard move
+    }
+
     // Pawn Rush logic
-    if (myAdvantage?.id === "pawn_rush" && color) { 
+    if (!move && myAdvantage?.id === "pawn_rush" && color) { 
       const pawnRushMove = handlePawnRushClient({ game, from, to, color });
       if (pawnRushMove) {
         move = pawnRushMove; 
@@ -292,6 +363,7 @@ export default function ChessGame() {
     }
 
     // Castle Master logic
+    // Note: Added '!move &&' to ensure it doesn't try if Pawn Rush already prepared a move.
     if (!move && myAdvantage?.id === "castle_master" && !hasUsedCastleMaster.current && color) {
       const castleMasterResult = handleCastleMasterClient({ game, from, to, color });
 
@@ -308,20 +380,32 @@ export default function ChessGame() {
         socket.emit("sendMove", { roomId, move: castleMasterResult.moveData });
         // Game over checks after emitting Castle Master move
         if (game.isCheckmate()) { 
-            const winner = game.turn() === "w" ? "black" : "white";
-            setGameOverMessage(`${winner} wins by checkmate`);
-            socket.emit("gameOver", { roomId, winnerColor: winner });
+            const winnerLogic = game.turn() === "w" ? "black" : "white"; // Winner is the one whose opponent is checkmated
+            setGameOverMessage(`${winnerLogic} wins by checkmate`);
+            socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
         } else if (game.isDraw()) { 
             setGameOverMessage("Draw");
-            socket.emit("gameDraw", { roomId });
+            socket.emit("gameDraw", { roomId, message: "Draw!" });
+        }  else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+          socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+        } else if (game.isThreefoldRepetition()) {
+           setGameOverMessage("Draw by Threefold Repetition");
+           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+        } else if (game.isInsufficientMaterial()) {
+           setGameOverMessage("Draw by Insufficient Material");
+           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
         }
         return castleMasterResult.moveData; 
       } else if (castleMasterResult.advantageUsed) {
+        // Advantage was attempted (e.g. king moved one square next to rook) but no special move was made.
+        // Block standard move if it was a failed special action.
         return null; 
       }
     }
 
     // Focused Bishop Logic
+    // Note: Added '!move &&'
     if (!move && myAdvantage?.id === "focused_bishop" && !hasUsedFocusedBishop.current && color) {
       const focusedBishopResult = handleFocusedBishopClient({
         game,
@@ -340,21 +424,33 @@ export default function ChessGame() {
           socket.emit("sendMove", { roomId, move: focusedBishopResult.moveData });
           // Game over checks
           if (game.isCheckmate()) { 
-            const winner = game.turn() === "w" ? "black" : "white";
-            setGameOverMessage(`${winner} wins by checkmate`);
-            socket.emit("gameOver", { roomId, winnerColor: winner });
+            const winnerLogic = game.turn() === "w" ? "black" : "white";
+            setGameOverMessage(`${winnerLogic} wins by checkmate`);
+            socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
           } else if (game.isDraw()) { 
             setGameOverMessage("Draw");
-            socket.emit("gameDraw", { roomId });
+            socket.emit("gameDraw", { roomId, message: "Draw!" });
+          } else if (game.isStalemate()) {
+            setGameOverMessage("Draw by Stalemate");
+            socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+          } else if (game.isThreefoldRepetition()) {
+             setGameOverMessage("Draw by Threefold Repetition");
+             socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+          } else if (game.isInsufficientMaterial()) {
+             setGameOverMessage("Draw by Insufficient Material");
+             socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
           }
           return focusedBishopResult.moveData; 
         } else {
+          // Focused Bishop was attempted (hasUsedFocusedBishop set to true) but no valid move was made.
+          // Block standard move.
           return null; 
         }
       }
     }
 
     // Corner Blitz Logic
+    // Note: Added '!move &&'
     if (!move && myAdvantage?.id === "corner_blitz" && color) {
       console.log("[ChessGame] makeMove: Checking Corner Blitz for", { from, to });
       const cornerBlitzResult = handleCornerBlitzClient({
@@ -384,18 +480,30 @@ export default function ChessGame() {
         
         // Check for game over states immediately after this client-side validated special move
         if (game.isCheckmate()) {
-          const winner = game.turn() === "w" ? "black" : "white";
-          setGameOverMessage(`${winner} wins by checkmate`);
-          socket.emit("gameOver", { roomId, winnerColor: winner });
+          const winnerLogic = game.turn() === "w" ? "black" : "white";
+          setGameOverMessage(`${winnerLogic} wins by checkmate`);
+          socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
-          socket.emit("gameDraw", { roomId });
+          socket.emit("gameDraw", { roomId, message: "Draw!" });
+        } else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+          socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+        } else if (game.isThreefoldRepetition()) {
+           setGameOverMessage("Draw by Threefold Repetition");
+           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+        } else if (game.isInsufficientMaterial()) {
+           setGameOverMessage("Draw by Insufficient Material");
+           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
         }
         // IMPORTANT: Return early to prevent this move from being processed by standard game.move()
         return cornerBlitzResult.moveData; 
-      } else if (cornerBlitzResult.rookMovedKey) {
+      } else if (cornerBlitzResult.rookMovedKey && !cornerBlitzResult.moveData) {
+        // This means a Corner Blitz move was *attempted* with a valid rook (rookMovedKey is set),
+        // but it was invalid (e.g., put king in check, or target square blocked).
+        // We should not fall through to standard move logic in this case.
         console.log(`[ChessGame] makeMove: Corner Blitz attempt for rook ${cornerBlitzResult.rookMovedKey} failed locally. Not sending to server or trying as standard move.`);
-        return null; // Prevent standard move logic by returning null
+        return null; 
       }
       // If rookMovedKey was null, it means it wasn't even a Corner Blitz attempt (e.g., wrong piece clicked),
       // so we fall through, and 'move' remains undefined, allowing standard logic or other advantages.
@@ -438,21 +546,21 @@ export default function ChessGame() {
 
       // Game over checks for standard moves / Pawn Rush
       if (game.isCheckmate()) { 
-        const winner = game.turn() === "w" ? "black" : "white";
-        setGameOverMessage(`${winner} wins by checkmate`);
-        socket.emit("gameOver", { roomId, winnerColor: winner });
+        const winnerLogic = game.turn() === "w" ? "black" : "white";
+        setGameOverMessage(`${winnerLogic} wins by checkmate`);
+        socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
       } else if (game.isDraw()) { 
         setGameOverMessage("Draw");
-        socket.emit("gameDraw", { roomId });
-      }  else if (game.isStalemate()) { // Added more draw checks here as well
+        socket.emit("gameDraw", { roomId, message: "Draw!" });
+      }  else if (game.isStalemate()) { 
         setGameOverMessage("Draw by Stalemate");
-        socket.emit("gameDraw", { roomId });
+        socket.emit("gameDraw", { roomId, message: "Stalemate!" });
       } else if (game.isThreefoldRepetition()) {
         setGameOverMessage("Draw by Threefold Repetition");
-        socket.emit("gameDraw", { roomId });
+        socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
       } else if (game.isInsufficientMaterial()) {
         setGameOverMessage("Draw by Insufficient Material");
-        socket.emit("gameDraw", { roomId });
+        socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
       }
     }
     return move; // Return the move object (or null if all attempts failed)

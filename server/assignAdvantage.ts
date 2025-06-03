@@ -30,10 +30,10 @@ const testSequence: Advantage[] = [
     rarity: "common"
   },
   { 
-    id: "silent_shield",
-    name: "Silent Shield",
-    description: "One random piece (excluding king) cannot be captured.",
-    rarity: "common" 
+    id: "royal_escort",
+    name: "Royal Escort",
+    description: "Your king may move two squares in any direction up to 3 times per game.",
+    rarity: "common"
   }
 ];
 

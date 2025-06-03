@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -15,6 +15,7 @@ import {
   CornerBlitzAdvantageRookState 
 } from "./logic/advantages/cornerBlitz";
 import { selectProtectedPiece } from "./logic/advantages/silentShield";
+import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
 
 console.log("setupSocketHandlers loaded");
 
@@ -48,6 +49,8 @@ type RoomState = {
   blackFocusedBishopState?: FocusedBishopAdvantageState;
   whiteRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
   blackRooksMoved?: CornerBlitzAdvantageRookState; // For Corner Blitz
+  whiteRoyalEscortState?: RoyalEscortState;
+  blackRoyalEscortState?: RoyalEscortState;
   silentShieldPieces?: {
     white: ShieldedPieceInfo | null;
     black: ShieldedPieceInfo | null;
@@ -109,8 +112,9 @@ export function setupSocketHandlers(io: Server) {
           whiteFocusedBishopState: { focusedBishopUsed: false },
           blackFocusedBishopState: { focusedBishopUsed: false },
           // Initialize other new states as needed
-          whiteRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
-          blackRooksMoved: { a1: false, h1: false, a8: false, h8: false }, // Initialize for Corner Blitz
+          whiteRooksMoved: { a1: false, h1: false, a8: false, h8: false }, 
+          blackRooksMoved: { a1: false, h1: false, a8: false, h8: false }, 
+          // Royal Escort states will be initialized when advantages are assigned
           silentShieldPieces: { white: null, black: null },
         };
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${rooms[roomId].fen} and default advantage states.`);
@@ -149,42 +153,46 @@ export function setupSocketHandlers(io: Server) {
         const initialGame = new Chess(); 
 
         // White player's advantage processing
-        if (room.whiteAdvantage?.id === "silent_shield" && room.silentShieldPieces && room.white) {
-            const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
-            if (whiteShieldedPiece) {
-                room.silentShieldPieces.white = whiteShieldedPiece;
-                console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
-                const whiteSocket = io.sockets.sockets.get(room.white);
-                if (whiteSocket) {
-                    whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage, shieldedPiece: whiteShieldedPiece });
+        // White player's advantage processing
+        if (room.whiteAdvantage && room.white) {
+            if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
+                const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
+                if (whiteShieldedPiece) {
+                    room.silentShieldPieces.white = whiteShieldedPiece;
+                    console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
+                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage, shieldedPiece: whiteShieldedPiece });
+                } else {
+                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 }
-            } else { // If no piece could be selected, emit advantage without shield info
-                const whiteSocket = io.sockets.sockets.get(room.white);
-                if (whiteSocket) {
-                    whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                }
-            }
-        } else if (room.whiteAdvantage && room.white) { // Standard advantage emission for white
-            const whiteSocket = io.sockets.sockets.get(room.white);
-            if (whiteSocket) {
-                whiteSocket.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+            } else if (room.whiteAdvantage.id === "royal_escort") {
+                room.whiteRoyalEscortState = { usedCount: 0 };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
+            } else { // Standard advantage emission for white
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
         }
 
         // Black player's advantage processing (socket is black's socket here)
-        if (room.blackAdvantage?.id === "silent_shield" && room.silentShieldPieces) {
-            const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
-            if (blackShieldedPiece) {
-                room.silentShieldPieces.black = blackShieldedPiece;
-                console.log(`Black player (${room.black}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage, shieldedPiece: blackShieldedPiece });
-            } else { // If no piece could be selected, emit advantage without shield info
-                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+        if (room.blackAdvantage) {
+            if (room.blackAdvantage.id === "silent_shield" && room.silentShieldPieces) {
+                const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
+                if (blackShieldedPiece) {
+                    room.silentShieldPieces.black = blackShieldedPiece;
+                    console.log(`Black player (${room.black}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
+                    socket.emit("advantageAssigned", { advantage: room.blackAdvantage, shieldedPiece: blackShieldedPiece });
+                } else {
+                     socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                }
+            } else if (room.blackAdvantage.id === "royal_escort") {
+                room.blackRoyalEscortState = { usedCount: 0 };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Royal Escort, state initialized.`);
+            } else { // Standard advantage emission for black
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
-        } else if (room.blackAdvantage) { // Standard advantage emission for black
-            socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
         }
-        // ---- END NEW LOGIC BLOCK ----
+        // ---- END Advantage Assignment and State Init ----
 
         io.to(roomId).emit("opponentJoined"); 
       } else {
@@ -235,26 +243,27 @@ export function setupSocketHandlers(io: Server) {
         // Fetch advantage states for the current player
         let currentPlayerAdvantageState_FB: FocusedBishopAdvantageState | undefined;
         let currentPlayerRooksMoved_CB: CornerBlitzAdvantageRookState | undefined;
+        let currentPlayerRoyalEscortState_RE: RoyalEscortState | undefined;
 
         if (senderColor === 'white') {
             currentPlayerAdvantageState_FB = room.whiteFocusedBishopState;
             currentPlayerRooksMoved_CB = room.whiteRooksMoved;
+            currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState;
         } else if (senderColor === 'black') {
             currentPlayerAdvantageState_FB = room.blackFocusedBishopState;
             currentPlayerRooksMoved_CB = room.blackRooksMoved;
+            currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState;
         }
-        // Fallback initialization if states are missing (should be handled by joinRoom)
-        if (!currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = { focusedBishopUsed: false };
-        if (!currentPlayerRooksMoved_CB) {
-            currentPlayerRooksMoved_CB = senderColor === 'white' ? { a1: false, h1: false } : { a8: false, h8: false };
-        }
-        // Update room state with fallbacks if they were applied
+        
+        // Fallback initialization for states if they are somehow missing (should be set during joinRoom)
         if (senderColor === 'white') {
-            if (!room.whiteFocusedBishopState) room.whiteFocusedBishopState = currentPlayerAdvantageState_FB;
-            if (!room.whiteRooksMoved) room.whiteRooksMoved = currentPlayerRooksMoved_CB;
+            if (room.whiteAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.whiteFocusedBishopState = { focusedBishopUsed: false };
+            if (room.whiteAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false }; // Note: a8/h8 for white is unusual but for completeness
+            if (room.whiteAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState = { usedCount: 0 };
         } else if (senderColor === 'black') {
-            if (!room.blackFocusedBishopState) room.blackFocusedBishopState = currentPlayerAdvantageState_FB;
-            if (!room.blackRooksMoved) room.blackRooksMoved = currentPlayerRooksMoved_CB;
+            if (room.blackAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.blackFocusedBishopState = { focusedBishopUsed: false };
+            if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false }; // Note: a1/h1 for black is unusual
+            if (room.blackAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState = { usedCount: 0 };
         }
 
         // ---- Start of Silent Shield Capture Prevention ----
@@ -345,28 +354,31 @@ export function setupSocketHandlers(io: Server) {
               message: "Focused Bishop move rejected by server.", 
               move: clientMoveData 
             });
+            // moveResult remains null if Focused Bishop was invalid
           }
         } else if (receivedMove.special === "corner_blitz") {
+          if (!currentPlayerRooksMoved_CB) { // Should be initialized, but safeguard
+            socket.emit("invalidMove", { message: "Corner Blitz state not found.", move: clientMoveData });
+            return; // Exit, as state is crucial
+          }
           const cbResult = handleCornerBlitzServer({
-            game: serverGame, // serverGame is loaded with originalFenBeforeAttempt
-            clientMoveData: receivedMove as any, // Cast as needed
+            game: serverGame, 
+            clientMoveData: receivedMove as any, 
             currentFen: originalFenBeforeAttempt!,
             playerColor: senderColor![0] as 'w' | 'b',
-            rooksMovedState: currentPlayerRooksMoved_CB!, // Assert non-null
+            rooksMovedState: currentPlayerRooksMoved_CB, 
           });
 
           moveResult = cbResult.moveResult;
 
           if (moveResult) {
-            // serverGame was modified by handleCornerBlitzServer
-            room.fen = serverGame.fen(); // Get FEN from the modified serverGame
+            room.fen = serverGame.fen(); 
             if (senderColor === 'white') {
               room.whiteRooksMoved = cbResult.advantageStateUpdated;
             } else {
               room.blackRooksMoved = cbResult.advantageStateUpdated;
             }
           } else {
-            // Revert serverGame if it changed, though handler should do this
             if (serverGame.fen() !== originalFenBeforeAttempt!) {
                  serverGame.load(originalFenBeforeAttempt!);
             }
@@ -374,10 +386,48 @@ export function setupSocketHandlers(io: Server) {
               message: "Corner Blitz move rejected by server.", 
               move: clientMoveData 
             });
+            // moveResult remains null
+          }
+        } else if (receivedMove.special === "royal_escort") {
+          const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+          if (!currentPlayerRoyalEscortState_RE || playerAdvantage?.id !== "royal_escort") {
+            socket.emit("invalidMove", { message: "Royal Escort state not found or advantage mismatch.", move: clientMoveData });
+            return; // Exit, as state is crucial
+          }
+          const reResult = validateRoyalEscortServerMove({
+            game: serverGame, // serverGame is loaded with originalFenBeforeAttempt
+            clientMoveData: receivedMove as any,
+            playerColor: senderColor![0] as 'w' | 'b',
+            royalEscortState: currentPlayerRoyalEscortState_RE,
+          });
+
+          moveResult = reResult.moveResult;
+
+          if (moveResult) {
+            room.fen = reResult.nextFen; // Use nextFen from result
+            serverGame.load(room.fen); // Sync serverGame instance with this new FEN
+
+            if (reResult.updatedRoyalEscortState) {
+              if (senderColor === 'white') {
+                room.whiteRoyalEscortState = reResult.updatedRoyalEscortState;
+              } else {
+                room.blackRoyalEscortState = reResult.updatedRoyalEscortState;
+              }
+            }
+          } else {
+            // validateRoyalEscortServerMove should not modify serverGame if move is invalid
+            // and should return original FEN. But as a safeguard:
+            if (serverGame.fen() !== originalFenBeforeAttempt!) {
+                 serverGame.load(originalFenBeforeAttempt!);
+            }
+            socket.emit("invalidMove", { 
+              message: "Royal Escort move rejected by server.", 
+              move: clientMoveData 
+            });
+            // moveResult remains null
           }
         } else { 
           // Standard move attempt
-          
         try {
           moveResult = serverGame.move({ 
             from: receivedMove.from,
@@ -480,15 +530,44 @@ export function setupSocketHandlers(io: Server) {
           if (receivedMove.special) {
             // This might be redundant if special handlers always emit their own errors on failure.
             // However, if a special handler fails before emitting, this provides some context.
-            message = `Your special move (${receivedMove.special}) could not be processed.`;
+            message = `Your special move (${receivedMove.special}) could not be processed or was invalid.`;
           } else if (serverGame.fen() === originalFenBeforeAttempt) {
             // If it was not a special move and the FEN hasn't changed, it was likely an invalid standard move.
-             message = "Your move was invalid according to chess rules.";
+             message = "Your move was invalid according to chess rules or internal server validation.";
           }
           
-          console.warn(`[sendMove] Fallback: Null moveResult for ${senderColor} (${senderId}) in room ${roomId}:`, receivedMove, `FEN before attempt: ${originalFenBeforeAttempt}. Emitting generic error.`);
+          console.warn(`[sendMove] Fallback or failed special move: Null moveResult for ${senderColor} (${senderId}) in room ${roomId}:`, receivedMove, `FEN before attempt: ${originalFenBeforeAttempt}. Emitting error: ${message}`);
           socket.emit("invalidMove", { message: message, move: clientMoveData });
         }
+
+        // After any move attempt (successful or not, if moveResult became non-null then nullified by deflection)
+        // Check for game over conditions if a move was made and not deflected, or if a move was made and deflection logic doesn't handle game over.
+        // The current structure with `if (moveResult)` then `handleAutoDeflect` implies that if deflected, `moveResult` might effectively be nullified for client broadcast.
+        // Game over checks should ideally be after the final state of the board for the turn is determined.
+        // The `isDeflected` block above doesn't re-check for game over.
+        // Let's assume game over checks are only for non-deflected, successful moves.
+        if (moveResult && room.fen === serverGame.fen()) { // Ensure serverGame is authoritative
+            if (serverGame.isCheckmate()) {
+                const loserTurn = serverGame.turn(); // 'w' if white is checkmated, 'b' if black is checkmated
+                const winnerColor = loserTurn === 'w' ? 'black' : 'white';
+                io.to(roomId).emit("gameOver", { 
+                    message: `${winnerColor.charAt(0).toUpperCase() + winnerColor.slice(1)} wins by checkmate!`,
+                    winnerColor: winnerColor 
+                });
+            } else if (serverGame.isDraw()) {
+                io.to(roomId).emit("gameOver", { message: "Draw!", winnerColor: null });
+            } else if (serverGame.isStalemate()) {
+                io.to(roomId).emit("gameOver", { message: "Stalemate!", winnerColor: null });
+            } else if (serverGame.isThreefoldRepetition()) {
+                io.to(roomId).emit("gameOver", { message: "Draw by Threefold Repetition!", winnerColor: null });
+            } else if (serverGame.isInsufficientMaterial()) {
+                io.to(roomId).emit("gameOver", { message: "Draw by Insufficient Material!", winnerColor: null });
+            }
+            // Standard turn update logic might be here or handled by FEN
+            // room.turn = serverGame.turn() === 'w' ? 'white' : 'black'; // Example
+            // io.to(roomId).emit("turnChange", { turn: room.turn, fen: room.fen }); // Example
+        }
+
       });
     });
 
