@@ -105,8 +105,10 @@ export interface ApplyLightningCaptureOpponentMoveParams {
   receivedMove: {
     from: string;
     to: string;
-    secondTo: string;
-    color: 'white' | 'black';
+    secondTo: string; // Kept as non-optional, assuming validation or type guard upstream or it's always sent by server for LC
+    special?: 'lightning_capture'; // Optional but helps in identifying if needed
+    color: 'white' | 'black'; 
+    // Other fields from ServerMovePayload like promotion, etc., might be needed if the move obj is more generic
   };
 }
 
@@ -114,17 +116,40 @@ export const applyLightningCaptureOpponentMove = ({
   game,
   receivedMove,
 }: ApplyLightningCaptureOpponentMoveParams): boolean => {
-  const first = game.move({ from: receivedMove.from as Square, to: receivedMove.to as Square, promotion: 'q' });
+  // Ensure secondTo is present, as per updated interface where it's non-optional.
+  // This check is more of a safeguard if the type wasn't strictly enforced by the caller.
+  if (!receivedMove.secondTo) { 
+     console.error("[applyLCOpponentMove] Critical: secondTo is missing in receivedMove:", receivedMove);
+     return false;
+  }
+
+  const first = game.move({ 
+    from: receivedMove.from as Square, 
+    to: receivedMove.to as Square, 
+    promotion: 'q' // Assuming 'q' for promotion, or it should come from receivedMove
+  });
+
   if (!first) {
-    console.error('Failed to apply first part of Lightning Capture:', receivedMove);
+    console.error('Failed to apply first part of opponent Lightning Capture:', receivedMove);
     return false;
   }
 
-  const second = game.move({ from: receivedMove.to as Square, to: receivedMove.secondTo as Square, promotion: 'q' });
+  const second = game.move({ 
+    from: receivedMove.to as Square, // 'from' for the second move is the 'to' of the first
+    to: receivedMove.secondTo as Square, 
+    promotion: 'q' // Assuming 'q' for promotion
+  });
+
   if (!second) {
-    console.error('Failed to apply second part of Lightning Capture:', receivedMove);
+    console.error('Failed to apply second part of opponent Lightning Capture:', receivedMove);
+    const undoneMove = game.undo(); // Attempt to undo the first move
+    if (!undoneMove) {
+        // This is a critical error state for the client, FEN sync might be needed.
+        console.error("CRITICAL: Failed to undo first part of LC after second part failed for opponent. Client desynced.");
+    } else {
+        console.log("Successfully undid the first part of opponent's LC move after second part failed.");
+    }
     return false;
   }
-
   return true;
 };

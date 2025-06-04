@@ -126,17 +126,20 @@ export default function ChessGame() {
     };
     socket.on("opponentDisconnected", handleOpponentDisconnected);
 
+    // Updated ServerMovePayload to include optional secondTo for Lightning Capture
     type ServerMovePayload = {
       from: string;
       to: string;
       special?: string;
       color?: "white" | "black";
-      rookFrom?: string;
-      rookTo?: string;
+      rookFrom?: string; // Example for Castle Master
+      rookTo?: string;   // Example for Castle Master
       promotion?: string;
+      secondTo?: string; // Added for Lightning Capture
     };
+    
     type ReceiveMoveEventData = {
-      move: ServerMovePayload;
+      move: ServerMovePayload; // Uses the updated ServerMovePayload
       updatedShieldedPiece?: ShieldedPieceInfo;
     };
 
@@ -205,18 +208,37 @@ export default function ChessGame() {
         console.log(
           "[ChessGame handleReceiveMove] Opponent's move is Lightning Capture.",
         );
-        const gameChanged = applyLightningCaptureOpponentMove({
-          game,
-          receivedMove: receivedMove as any,
-        });
-        if (gameChanged) {
-          setFen(game.fen());
-          moveSuccessfullyApplied = true;
+        if (typeof receivedMove.secondTo === 'string' && receivedMove.color) {
+            const lightningCaptureData = {
+                from: receivedMove.from,
+                to: receivedMove.to,
+                secondTo: receivedMove.secondTo,
+                special: receivedMove.special as 'lightning_capture', // Assert special type
+                color: receivedMove.color,
+            };
+
+            const gameChanged = applyLightningCaptureOpponentMove({
+                game,
+                receivedMove: lightningCaptureData,
+            });
+
+            if (gameChanged) {
+                setFen(game.fen());
+                moveSuccessfullyApplied = true;
+            } else {
+                console.error(
+                    "[ChessGame handleReceiveMove] applyLightningCaptureOpponentMove returned false for LC.",
+                );
+                // applyLightningCaptureOpponentMove should have tried to undo, client might be desynced
+                socket.emit("requestFenSync", { roomId });
+                moveSuccessfullyApplied = false; 
+            }
         } else {
-          console.error(
-            "[ChessGame handleReceiveMove] Failed to apply opponent's Lightning Capture move.",
-          );
-          socket.emit("requestFenSync", { roomId });
+            console.error(
+                `[ChessGame handleReceiveMove] Lightning Capture move received with missing 'secondTo' (${receivedMove.secondTo}) or 'color' (${receivedMove.color}).`,
+            );
+            socket.emit("requestFenSync", { roomId }); // Data integrity issue
+            moveSuccessfullyApplied = false;
         }
       } else if (receivedMove.special === "royal_escort") {
         console.log(
