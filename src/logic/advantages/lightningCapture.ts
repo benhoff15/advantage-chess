@@ -34,58 +34,111 @@ export async function handleLightningCaptureClient({
   } | null;
   attempted: boolean;
 }> {
+  console.log('[LC Client] Args:', { originalFen, from, to, color, used: lightningCaptureState.used });
+
+  const currentLoadedFen = game.fen();
+  if (currentLoadedFen !== originalFen) {
+    console.error(`[LC Client] CRITICAL FEN MISMATCH: expected ${originalFen} but game has ${currentLoadedFen}`);
+    game.load(originalFen);
+    console.log('[LC Client] Game reloaded with originalFen. New game FEN:', game.fen());
+  } else {
+    console.log('[LC Client] Game instance FEN matches originalFen param:', currentLoadedFen);
+  }
+
   if (lightningCaptureState.used) {
+    console.log('[LC Client] Already used.');
     return { moveData: null, attempted: false };
   }
 
-  game.load(originalFen);
+  const pieceOnTargetSquare = game.get(to as Square);
+  const currentTurn = game.turn();
+  console.log('[LC Client] First Move Validation Details:');
+  console.log('[LC Client] Target square:', to);
+  console.log('[LC Client] Piece on target square:', pieceOnTargetSquare);
+  console.log('[LC Client] Current game turn:', currentTurn);
 
-  // First Move Validation & Execution
-  const pieceOnTargetSquare = game.get(to as Square); // Cast to Square
-  if (!pieceOnTargetSquare || pieceOnTargetSquare.color === game.turn()) {
-    // Not a capture or capturing own piece
+  if (!pieceOnTargetSquare || pieceOnTargetSquare.color === currentTurn) {
+    console.log('[LC Client] First move validation FAILED: not a valid capture.');
     return { moveData: null, attempted: true };
   }
 
-  const firstMove = game.move({ from: from as Square, to: to as Square, promotion: 'q' }); // Cast from and to
+  const firstMove = game.move({ from: from as Square, to: to as Square, promotion: 'q' });
   if (!firstMove) {
+    console.log('[LC Client] game.move for first move FAILED.');
     return { moveData: null, attempted: true };
   }
+
+  console.log('[LC Client] First move applied. FEN:', game.fen());
   setFen(game.fen());
 
-  // Second Move Validation & Execution
-  const turnColor = game.turn(); // Should be the same as the player's color
-  const possibleSecondMoves = (game.moves({ square: to as Square, verbose: true }) as Move[]).filter(m => { // Cast to
-    const pieceOnTargetSq = game.get(m.to as Square); // Cast m.to
-    return !(pieceOnTargetSq && pieceOnTargetSq.type === 'k' && pieceOnTargetSq.color !== turnColor);
+  const movedPiece = game.get(to as Square);
+  const movedPieceType = movedPiece?.type;
+  console.log(`[LC Client] Piece type after first move (on ${to}): ${movedPieceType}`);
+  
+
+  // Force turn back to original player
+  const parts = firstMove.after.split(" ");
+  parts[1] = color === "white" ? "w" : "b";
+  const fenWithSameTurn = parts.join(" ");
+  game.load(fenWithSameTurn);
+  console.log('[LC Client] Reloaded FEN with same player turn:', game.fen());
+
+  // Generate legal second moves now
+  const allPossibleSecondMoves = game.moves({ square: to as Square, verbose: true }) as Move[];
+  console.log(`[LC Client] Found ${allPossibleSecondMoves.length} raw second moves from square ${to}.`);
+
+  const playerColorShort = color === 'white' ? 'w' : 'b';
+  const possibleSecondMoves = allPossibleSecondMoves.filter(m => {
+    const pieceOnTarget = game.get(m.to as Square);
+    if (pieceOnTarget && pieceOnTarget.type === 'k' && pieceOnTarget.color !== playerColorShort) {
+      console.log(`[LC Client] Filtering out move ${m.san} (targets enemy king)`);
+      return false;
+    }
+    return true;
   });
+
+  console.log(`[LC Client] Filtered to ${possibleSecondMoves.length} legal second moves:`, possibleSecondMoves.map(m => m.san));
 
   if (possibleSecondMoves.length === 0) {
     game.load(originalFen);
     setFen(originalFen);
+    console.log('[LC Client] No valid second moves. Reverting to original FEN.');
     return { moveData: null, attempted: true };
   }
 
-  const secondTo = await promptSecondMove(new Chess(game.fen()), from, to, possibleSecondMoves);
+  const secondTo = await promptSecondMove(game, from, to, possibleSecondMoves);
+  console.log('[LC Client] promptSecondMove returned:', secondTo);
 
   if (!secondTo) {
     game.load(originalFen);
     setFen(originalFen);
+    console.log('[LC Client] User cancelled second move. Reverting.');
     return { moveData: null, attempted: true };
   }
-  
-  // Need to re-load the FEN after prompt, as game state might be explored by UI
-  game.load(firstMove.after); // Load the state *after* the first move
 
-  const pieceOnSecondTarget = game.get(secondTo as Square); // Cast secondTo
-  if (pieceOnSecondTarget && pieceOnSecondTarget.type === 'k' && pieceOnSecondTarget.color !== turnColor) {
+  const pieceOnSecondTarget = game.get(secondTo as Square);
+  if (pieceOnSecondTarget && pieceOnSecondTarget.type === 'k' && pieceOnSecondTarget.color !== playerColorShort) {
+    console.log('[LC Client] Second move validation FAILED: cannot capture opponent king.');
     game.load(originalFen);
     setFen(originalFen);
     return { moveData: null, attempted: true };
   }
 
-  const secondMove = game.move({ from: to as Square, to: secondTo as Square, promotion: 'q' }); // Cast to and secondTo
+  const pieceBeforeSecondMove = game.get(to as Square);
+  const typeBeforeSecondMove = pieceBeforeSecondMove?.type;
+  console.log(`[LC Client] Piece type before second move (on ${to}): ${typeBeforeSecondMove}`);
+
+  // Check if piece type changed unexpectedly
+  if (typeBeforeSecondMove !== movedPieceType) {
+    console.warn(`[LC Client] ABORTING: Piece type mismatch before second move. Expected '${movedPieceType}', but got '${typeBeforeSecondMove}'`);
+    game.load(originalFen);
+    setFen(originalFen);
+    return { moveData: null, attempted: true };
+  }
+
+  const secondMove = game.move({ from: to as Square, to: secondTo as Square, promotion: 'q' });
   if (!secondMove) {
+    console.log('[LC Client] Second move execution failed. Reverting.');
     game.load(originalFen);
     setFen(originalFen);
     return { moveData: null, attempted: true };
@@ -112,23 +165,15 @@ export const applyLightningCaptureOpponentMove = ({
   game,
   receivedMove,
 }: ApplyLightningCaptureOpponentMoveParams): boolean => {
-  // Perform the first capture
-  const firstMoveGame = game.move({ from: receivedMove.from as Square, to: receivedMove.to as Square, promotion: 'q' }); // Cast
-  if (!firstMoveGame) {
-    console.error('Failed to apply first move of lightning capture for opponent:', receivedMove);
-    // Potentially revert, but server is source of truth.
-    // For now, just log and return false.
+  const first = game.move({ from: receivedMove.from as Square, to: receivedMove.to as Square, promotion: 'q' });
+  if (!first) {
+    console.error('Failed to apply first part of Lightning Capture:', receivedMove);
     return false;
   }
 
-  // Perform the second move
-  const secondMoveGame = game.move({ from: receivedMove.to as Square, to: receivedMove.secondTo as Square, promotion: 'q' }); // Cast
-  if (!secondMoveGame) {
-    console.error('Failed to apply second move of lightning capture for opponent:', receivedMove);
-    // Potentially revert the first move if desired, e.g., by loading a FEN from before the first move.
-    // However, the server is the source of truth, so complex rollback logic here might be redundant
-    // if the server ensures valid sequences. For now, log and return false.
-    // Consider a more robust error handling or state synchronization mechanism if needed.
+  const second = game.move({ from: receivedMove.to as Square, to: receivedMove.secondTo as Square, promotion: 'q' });
+  if (!second) {
+    console.error('Failed to apply second part of Lightning Capture:', receivedMove);
     return false;
   }
 

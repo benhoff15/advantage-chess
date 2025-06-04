@@ -6,13 +6,19 @@ import { Square } from "chess.js";
 import { socket } from "../socket";
 import { Advantage, ShieldedPieceInfo } from "../../shared/types";
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
-import { handlePawnRushClient, applyPawnRushOpponentMove } from "../logic/advantages/pawnRush";
-import { handleCastleMasterClient, applyCastleMasterOpponentMove } from "../logic/advantages/castleMaster";
-import { 
-  handleFocusedBishopClient, 
-  applyFocusedBishopOpponentMove, 
-  FocusedBishopClientMove, 
-  OpponentFocusedBishopMove 
+import {
+  handlePawnRushClient,
+  applyPawnRushOpponentMove,
+} from "../logic/advantages/pawnRush";
+import {
+  handleCastleMasterClient,
+  applyCastleMasterOpponentMove,
+} from "../logic/advantages/castleMaster";
+import {
+  handleFocusedBishopClient,
+  applyFocusedBishopOpponentMove,
+  FocusedBishopClientMove,
+  OpponentFocusedBishopMove,
 } from "../logic/advantages/focusedBishop";
 import {
   handleCornerBlitzClient,
@@ -39,7 +45,8 @@ export default function ChessGame() {
   const [opponentConnected, setOpponentConnected] = useState(false);
   const [gameOverMessage, setGameOverMessage] = useState<string | null>(null);
   const [myAdvantage, setMyAdvantage] = useState<Advantage | null>(null);
-  const [myShieldedPieceInfo, setMyShieldedPieceInfo] = useState<ShieldedPieceInfo | null>(null); // Added
+  const [myShieldedPieceInfo, setMyShieldedPieceInfo] =
+    useState<ShieldedPieceInfo | null>(null); // Added
   const fenSnapshotBeforeMove = useRef<string>(game.fen()); // For reverting deflected moves
   const [revealedAdvantages, setRevealedAdvantages] = useState<{
     whiteAdvantage?: Advantage;
@@ -49,16 +56,29 @@ export default function ChessGame() {
 
   const hasUsedCastleMaster = useRef(false);
   const hasUsedFocusedBishop = useRef(false);
-  const playerRooksMoved = useRef<PlayerRooksMovedState>({ 
-    a1: false, h1: false, a8: false, h8: false 
+  const playerRooksMoved = useRef<PlayerRooksMovedState>({
+    a1: false,
+    h1: false,
+    a8: false,
+    h8: false,
   });
-  const [royalEscortState, setRoyalEscortState] = useState<RoyalEscortState | null>(null);
-  const [lightningCaptureState, setLightningCaptureState] = useState<LightningCaptureState>({ used: false });
-  const [isLightningCaptureActive, setIsLightningCaptureActive] = useState(false);
+  const [royalEscortState, setRoyalEscortState] =
+    useState<RoyalEscortState | null>(null);
+  const [lightningCaptureState, setLightningCaptureState] =
+    useState<LightningCaptureState>({ used: false });
+  const [isLightningCaptureActive, setIsLightningCaptureActive] =
+    useState(false);
   const [isAwaitingSecondLcMove, setIsAwaitingSecondLcMove] = useState(false);
-  const [lcSecondMoveResolver, setLcSecondMoveResolver] = useState<{ resolve: (to: string | null) => void } | null>(null);
-  const [lcFirstMoveDetails, setLcFirstMoveDetails] = useState<{ from: string; to: string } | null>(null);
-  const [lcPossibleSecondMoves, setLcPossibleSecondMoves] = useState<string[]>([]);
+  const [lcSecondMoveResolver, setLcSecondMoveResolver] = useState<{
+    resolve: (to: string | null) => void;
+  } | null>(null);
+  const [lcFirstMoveDetails, setLcFirstMoveDetails] = useState<{
+    from: string;
+    to: string;
+  } | null>(null);
+  const [lcPossibleSecondMoves, setLcPossibleSecondMoves] = useState<string[]>(
+    [],
+  );
 
   useEffect(() => {
     if (myAdvantage?.id === "royal_escort") {
@@ -67,7 +87,7 @@ export default function ChessGame() {
       setRoyalEscortState(null); // Reset if advantage changes
     }
     if (myAdvantage?.id === "lightning_capture") {
-      setLightningCaptureState({ used: false }); 
+      setLightningCaptureState({ used: false });
       setIsLightningCaptureActive(false);
       setIsAwaitingSecondLcMove(false);
     } else {
@@ -86,7 +106,9 @@ export default function ChessGame() {
   useEffect(() => {
     if (!roomId) return;
 
-    console.log(`[ChessGame useEffect] Setting up for room: ${roomId}, color: ${color}`);
+    console.log(
+      `[ChessGame useEffect] Setting up for room: ${roomId}, color: ${color}`,
+    );
     socket.emit("joinRoom", roomId);
 
     const handleColorAssigned = (assignedColor: "white" | "black") => {
@@ -109,33 +131,49 @@ export default function ChessGame() {
     socket.on("opponentDisconnected", handleOpponentDisconnected);
 
     type ServerMovePayload = {
-      from: string; to: string; special?: string; color?: "white" | "black";
-      rookFrom?: string; rookTo?: string; promotion?: string;
+      from: string;
+      to: string;
+      special?: string;
+      color?: "white" | "black";
+      rookFrom?: string;
+      rookTo?: string;
+      promotion?: string;
     };
     type ReceiveMoveEventData = {
-      move: ServerMovePayload; updatedShieldedPiece?: ShieldedPieceInfo;
+      move: ServerMovePayload;
+      updatedShieldedPiece?: ShieldedPieceInfo;
     };
 
     const handleReceiveMove = (data: ReceiveMoveEventData) => {
       const receivedMove = data.move;
       const updatedShieldedPieceFromServer = data.updatedShieldedPiece;
 
-      console.log(`[ChessGame handleReceiveMove] START. Current color state: ${color}. Received move:`, receivedMove);
+      console.log(
+        `[ChessGame handleReceiveMove] START. Current color state: ${color}. Received move:`,
+        receivedMove,
+      );
       if (updatedShieldedPieceFromServer) {
-        console.log("[ChessGame handleReceiveMove] Server sent updatedShieldedPiece:", updatedShieldedPieceFromServer);
+        console.log(
+          "[ChessGame handleReceiveMove] Server sent updatedShieldedPiece:",
+          updatedShieldedPieceFromServer,
+        );
       }
 
       // If this client is awaiting a second LC move, it should not process incoming moves from opponent.
       // This can happen in rare race conditions. Server should ultimately resolve.
       if (isAwaitingSecondLcMove) {
-        console.warn("[ChessGame handleReceiveMove] Ignoring opponent move while awaiting second LC move.");
+        console.warn(
+          "[ChessGame handleReceiveMove] Ignoring opponent move while awaiting second LC move.",
+        );
         return;
       }
 
       const isEcho = receivedMove.color === color;
 
       if (isEcho) {
-        console.log("[ChessGame handleReceiveMove] Detected ECHO of my own move.");
+        console.log(
+          "[ChessGame handleReceiveMove] Detected ECHO of my own move.",
+        );
         if (receivedMove.special === "lightning_capture") {
           // Own LC move confirmed by server, update state
           setLightningCaptureState({ used: true });
@@ -145,59 +183,96 @@ export default function ChessGame() {
           setLcPossibleSecondMoves([]);
         }
         // Process potential state updates for echo (e.g. Silent Shield update after own move)
-        if (updatedShieldedPieceFromServer && myShieldedPieceInfo && updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id) {
-          console.log(`[ChessGame handleReceiveMove ECHO] Updating myShieldedPieceInfo from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`);
+        if (
+          updatedShieldedPieceFromServer &&
+          myShieldedPieceInfo &&
+          updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id
+        ) {
+          console.log(
+            `[ChessGame handleReceiveMove ECHO] Updating myShieldedPieceInfo from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`,
+          );
           setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
         }
-        console.log("[ChessGame handleReceiveMove ECHO] Processing complete. Returning.");
-        return; 
+        console.log(
+          "[ChessGame handleReceiveMove ECHO] Processing complete. Returning.",
+        );
+        return;
       }
 
-      console.log(`[ChessGame handleReceiveMove] Processing OPPONENT's move: ${JSON.stringify(receivedMove)}`);
+      console.log(
+        `[ChessGame handleReceiveMove] Processing OPPONENT's move: ${JSON.stringify(receivedMove)}`,
+      );
       let moveSuccessfullyApplied = false;
-      const currentFenBeforeOpponentMove = game.fen(); 
+      const currentFenBeforeOpponentMove = game.fen();
 
       if (receivedMove.special === "lightning_capture") {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Lightning Capture.");
-        const gameChanged = applyLightningCaptureOpponentMove({ game, receivedMove: receivedMove as any });
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Lightning Capture.",
+        );
+        const gameChanged = applyLightningCaptureOpponentMove({
+          game,
+          receivedMove: receivedMove as any,
+        });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Lightning Capture move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Lightning Capture move.",
+          );
           socket.emit("requestFenSync", { roomId });
         }
       } else if (receivedMove.special === "royal_escort") {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Royal Escort.");
-        const gameChanged = applyRoyalEscortOpponentMove({ game, receivedMove: receivedMove as OpponentRoyalEscortMove });
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Royal Escort.",
+        );
+        const gameChanged = applyRoyalEscortOpponentMove({
+          game,
+          receivedMove: receivedMove as OpponentRoyalEscortMove,
+        });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Royal Escort move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Royal Escort move.",
+          );
           // Request a FEN sync from server or handle error appropriately
           socket.emit("requestFenSync", { roomId });
         }
       } else if (receivedMove.special?.startsWith("castle-master")) {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Castle Master.");
-        const gameChanged = applyCastleMasterOpponentMove({ game, receivedMove });
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Castle Master.",
+        );
+        const gameChanged = applyCastleMasterOpponentMove({
+          game,
+          receivedMove,
+        });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Castle Master move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Castle Master move.",
+          );
         }
       } else if (receivedMove.special === "pawn_rush_manual") {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Pawn Rush.");
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Pawn Rush.",
+        );
         const gameChanged = applyPawnRushOpponentMove({ game, receivedMove });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Pawn Rush move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Pawn Rush move.",
+          );
         }
       } else if (receivedMove.special === "focused_bishop") {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Focused Bishop.");
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Focused Bishop.",
+        );
         const gameChanged = applyFocusedBishopOpponentMove({
           game,
           receivedMove: receivedMove as OpponentFocusedBishopMove,
@@ -206,49 +281,68 @@ export default function ChessGame() {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Focused Bishop move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Focused Bishop move.",
+          );
         }
       } else if (receivedMove.special === "corner_blitz") {
-        console.log("[ChessGame handleReceiveMove] Opponent's move is Corner Blitz.");
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move is Corner Blitz.",
+        );
         const gameChanged = applyCornerBlitzOpponentMove({
           game,
-          receivedMove: receivedMove as any, 
+          receivedMove: receivedMove as any,
         });
         if (gameChanged) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
         } else {
-          console.error("[ChessGame handleReceiveMove] Failed to apply opponent's Corner Blitz move.");
+          console.error(
+            "[ChessGame handleReceiveMove] Failed to apply opponent's Corner Blitz move.",
+          );
         }
       } else {
-        console.log(`[ChessGame handleReceiveMove] Attempting to apply opponent's STANDARD move: ${JSON.stringify(receivedMove)} on FEN: ${currentFenBeforeOpponentMove}`);
+        console.log(
+          `[ChessGame handleReceiveMove] Attempting to apply opponent's STANDARD move: ${JSON.stringify(receivedMove)} on FEN: ${currentFenBeforeOpponentMove}`,
+        );
         const standardMove = game.move({
           from: receivedMove.from,
           to: receivedMove.to,
-          promotion: receivedMove.promotion ? (receivedMove.promotion as any) : undefined,
+          promotion: receivedMove.promotion
+            ? (receivedMove.promotion as any)
+            : undefined,
         });
 
         if (standardMove) {
           setFen(game.fen());
           moveSuccessfullyApplied = true;
-          console.log(`[ChessGame handleReceiveMove] Opponent's standard move applied. New FEN: ${game.fen()}`);
+          console.log(
+            `[ChessGame handleReceiveMove] Opponent's standard move applied. New FEN: ${game.fen()}`,
+          );
         } else {
           console.error(
             `[ChessGame handleReceiveMove] Standard game.move() FAILED for opponent's received move. ` +
-            `Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}. Game history: ${JSON.stringify(game.history({verbose: true}))}`
+              `Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}. Game history: ${JSON.stringify(game.history({ verbose: true }))}`,
           );
         }
       }
 
       if (moveSuccessfullyApplied) {
-        console.log("[ChessGame handleReceiveMove] Opponent's move successfully applied. Updating state.");
+        console.log(
+          "[ChessGame handleReceiveMove] Opponent's move successfully applied. Updating state.",
+        );
         if (updatedShieldedPieceFromServer) {
           // This logic might be for when the opponent's move affects *my* shielded piece,
           // or if we were tracking the opponent's shielded piece.
           // For now, only updating if it's my piece.
-          if (myShieldedPieceInfo && updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id) {
-             console.log(`[ChessGame handleReceiveMove] Updating myShieldedPieceInfo (opponent move context) from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`);
-             setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
+          if (
+            myShieldedPieceInfo &&
+            updatedShieldedPieceFromServer.id === myShieldedPieceInfo.id
+          ) {
+            console.log(
+              `[ChessGame handleReceiveMove] Updating myShieldedPieceInfo (opponent move context) from ${myShieldedPieceInfo.currentSquare} to ${updatedShieldedPieceFromServer.currentSquare}`,
+            );
+            setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
           }
           // else if (opponentShieldedPieceInfo && updatedShieldedPieceFromServer.id === opponentShieldedPieceInfo.id) {
           //   setOpponentShieldedPieceInfo(updatedShieldedPieceFromServer); // If tracking opponent's shield
@@ -268,29 +362,36 @@ export default function ChessGame() {
           setGameOverMessage("Draw by Insufficient Material");
         }
       } else {
-        console.warn("[ChessGame handleReceiveMove] Opponent's move was NOT successfully applied. State may be inconsistent.");
+        console.warn(
+          "[ChessGame handleReceiveMove] Opponent's move was NOT successfully applied. State may be inconsistent.",
+        );
       }
       console.log("[ChessGame handleReceiveMove] END.");
     };
     socket.on("receiveMove", handleReceiveMove);
 
     const handleRevealAdvantages = (data: {
-        whiteAdvantage?: Advantage;
-        blackAdvantage?: Advantage;
-        winnerColor?: "white" | "black" | null;
-      }) => {
+      whiteAdvantage?: Advantage;
+      blackAdvantage?: Advantage;
+      winnerColor?: "white" | "black" | null;
+    }) => {
       console.log("[ChessGame event] revealAdvantages:", data);
       setRevealedAdvantages(data);
     };
     socket.on("revealAdvantages", handleRevealAdvantages);
 
-    const handleAdvantageAssigned = (data: { advantage: Advantage, shieldedPiece?: ShieldedPieceInfo }) => {
+    const handleAdvantageAssigned = (data: {
+      advantage: Advantage;
+      shieldedPiece?: ShieldedPieceInfo;
+    }) => {
       console.log("[ChessGame event] advantageAssigned:", data);
       setMyAdvantage(data.advantage);
       if (data.shieldedPiece) {
         setMyShieldedPieceInfo(data.shieldedPiece);
         if (data.advantage.id === "silent_shield") {
-          console.log(`SILENT SHIELD: Your ${data.shieldedPiece.type.toUpperCase()} on ${data.shieldedPiece.initialSquare} is protected.`);
+          console.log(
+            `SILENT SHIELD: Your ${data.shieldedPiece.type.toUpperCase()} on ${data.shieldedPiece.initialSquare} is protected.`,
+          );
         }
       }
     };
@@ -298,7 +399,9 @@ export default function ChessGame() {
 
     const handleMoveDeflected = (data?: { move?: any }) => {
       console.log("[ChessGame event] moveDeflected:", data?.move);
-      alert("Your move was deflected by the opponent's Auto Deflect advantage!");
+      alert(
+        "Your move was deflected by the opponent's Auto Deflect advantage!",
+      );
       try {
         game.load(fenSnapshotBeforeMove.current);
         setFen(game.fen());
@@ -308,13 +411,21 @@ export default function ChessGame() {
     };
     socket.on("moveDeflected", handleMoveDeflected);
 
-    const handleInvalidMove = (data: { message: string, move?: any }) => {
-      console.warn("[ChessGame event] invalidMove:", data.move, "Reason:", data.message);
+    const handleInvalidMove = (data: { message: string; move?: any }) => {
+      console.warn(
+        "[ChessGame event] invalidMove:",
+        data.move,
+        "Reason:",
+        data.message,
+      );
       alert(`Invalid Move: ${data.message}`);
       try {
         game.load(fenSnapshotBeforeMove.current);
         setFen(game.fen());
-        console.log("Game state reverted to FEN:", fenSnapshotBeforeMove.current);
+        console.log(
+          "Game state reverted to FEN:",
+          fenSnapshotBeforeMove.current,
+        );
       } catch (e) {
         console.error("Error loading snapshot after invalid move:", e);
       }
@@ -322,49 +433,71 @@ export default function ChessGame() {
     socket.on("invalidMove", handleInvalidMove);
 
     return () => {
-      console.log(`[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`);
+      console.log(
+        `[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`,
+      );
       socket.off("colorAssigned", handleColorAssigned);
       socket.off("opponentJoined", handleOpponentJoined);
       socket.off("opponentDisconnected", handleOpponentDisconnected);
-      socket.off("receiveMove", handleReceiveMove); 
+      socket.off("receiveMove", handleReceiveMove);
       socket.off("revealAdvantages", handleRevealAdvantages);
       socket.off("advantageAssigned", handleAdvantageAssigned);
       socket.off("moveDeflected", handleMoveDeflected);
       socket.off("invalidMove", handleInvalidMove);
     };
-  }, [roomId, game, color, myAdvantage, myShieldedPieceInfo, fenSnapshotBeforeMove]);
+  }, [
+    roomId,
+    game,
+    color,
+    myAdvantage,
+    myShieldedPieceInfo,
+    fenSnapshotBeforeMove,
+  ]);
   // Note: `game` (useState object) and `fenSnapshotBeforeMove` (ref object) are stable.
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
   // handleAdvantageAssigned, and the logging in cleanup depend on their current values.
 
   const promptSecondMove = React.useCallback(
-  (
-    gameInstanceAfterFirstMove: Chess, // Can be used to display board state to user
-    firstMoveFrom: string,
-    firstMoveTo: string,
-    possibleMoves: Array<Move>
-  ): Promise<string | null> => {
-    return new Promise((resolve) => {
-      // Log the FEN of the game instance passed, to ensure it's after the first move
-      console.log("promptSecondMove: Game FEN after first move:", gameInstanceAfterFirstMove.fen());
-      console.log("promptSecondMove: Possible second moves:", possibleMoves.map(m => m.to));
+    (
+      gameInstanceAfterFirstMove: Chess, // Can be used to display board state to user
+      firstMoveFrom: string,
+      firstMoveTo: string,
+      possibleMoves: Array<Move>,
+    ): Promise<string | null> => {
+      return new Promise((resolve) => {
+        // Log the FEN of the game instance passed, to ensure it's after the first move
+        console.log(
+          "promptSecondMove: Game FEN after first move:",
+          gameInstanceAfterFirstMove.fen(),
+        );
+        console.log(
+          "promptSecondMove: Possible second moves:",
+          possibleMoves.map((m) => m.to),
+        );
 
-      setLcPossibleSecondMoves(possibleMoves.map((m) => m.to));
-      setIsAwaitingSecondLcMove(true);
-      setLcFirstMoveDetails({ from: firstMoveFrom, to: firstMoveTo });
-      setLcSecondMoveResolver({ resolve }); // Store the resolve function
-    });
-  },
-  [setLcPossibleSecondMoves, setIsAwaitingSecondLcMove, setLcFirstMoveDetails, setLcSecondMoveResolver]
-);
-
+        setLcPossibleSecondMoves(possibleMoves.map((m) => m.to));
+        setIsAwaitingSecondLcMove(true);
+        setLcFirstMoveDetails({ from: firstMoveFrom, to: firstMoveTo });
+        setLcSecondMoveResolver({ resolve }); // Store the resolve function
+      });
+    },
+    [
+      setLcPossibleSecondMoves,
+      setIsAwaitingSecondLcMove,
+      setLcFirstMoveDetails,
+      setLcSecondMoveResolver,
+    ],
+  );
 
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
     const myColor = color;
 
     const turn = game.turn();
-    if ((turn === "w" && myColor !== "white") || (turn === "b" && myColor !== "black")) {
+    if (
+      (turn === "w" && myColor !== "white") ||
+      (turn === "b" && myColor !== "black")
+    ) {
       return null;
     }
 
@@ -373,86 +506,110 @@ export default function ChessGame() {
 
     // Handling the second move of Lightning Capture
     if (isAwaitingSecondLcMove && lcSecondMoveResolver && lcFirstMoveDetails) {
-      console.log(`[ChessGame makeMove] Handling second LC move. From: ${lcFirstMoveDetails.to}, To: ${to}`);
+      console.log(
+        `[ChessGame makeMove] Handling second LC move. From: ${lcFirstMoveDetails.to}, To: ${to}`,
+      );
       // Check if 'to' is a valid second move destination
       if (!lcPossibleSecondMoves.includes(to)) {
-        alert("Invalid second move for Lightning Capture. Click a highlighted square.");
+        alert(
+          "Invalid second move for Lightning Capture. Click a highlighted square.",
+        );
         return null;
       }
       lcSecondMoveResolver.resolve(to);
-      return;
+      return null;
     }
 
     if (isLightningCaptureActive && !isAwaitingSecondLcMove) {
-
     }
-        
+
     const opponentShieldedPieceInfo: ShieldedPieceInfo | null = null; // Placeholder
-    if (isAttemptToCaptureShieldedPieceClient(to, opponentShieldedPieceInfo, game)) {
-      alert("Client check: This piece is protected by Silent Shield and cannot be captured.");
+    if (
+      isAttemptToCaptureShieldedPieceClient(to, opponentShieldedPieceInfo, game)
+    ) {
+      alert(
+        "Client check: This piece is protected by Silent Shield and cannot be captured.",
+      );
       return null; // Prevent move
     }
 
     let move: any; // This will hold the move object to be sent or processed
 
     // Lightning Capture Activation
-    if (myAdvantage?.id === "lightning_capture" && isLightningCaptureActive && !lightningCaptureState.used && myColor) {
-      console.log(`[ChessGame makeMove] Attempting Lightning Capture from ${from} to ${to}`);
-      const originalFenForLC = fenSnapshotBeforeMove.current; // Use the FEN before any move
-
-      // Ensure game instance is pristine for handleLightningCaptureClient
+    if (
+      myAdvantage?.id === "lightning_capture" &&
+      isLightningCaptureActive &&
+      !lightningCaptureState.used &&
+      myColor
+    ) {
+      console.log(
+        `[ChessGame makeMove] Attempting Lightning Capture from ${from} to ${to}`,
+      );
+      const originalFenForLC = fenSnapshotBeforeMove.current; // This is already captured
+      // Add log right after capturing originalFenForLC
+      // console.log('[ChessGame makeMove] originalFenForLC for LC attempt:', originalFenForLC);
       const gameInstanceForLC = new Chess(originalFenForLC);
 
+      // Call handleLightningCaptureClient but don't return from makeMove here.
+      // Let the promise resolve and update state/FEN as needed.
+      // The onPieceDrop will initially cause a snapback if we return null or nothing.
+      // handleLightningCaptureClient will call setFen if the first move is valid.
       handleLightningCaptureClient({
-        game: gameInstanceForLC, // Use a fresh instance or ensure game is reset
+        game: gameInstanceForLC,
         originalFen: originalFenForLC,
         from,
         to,
         color: myColor,
         lightningCaptureState,
         promptSecondMove,
-        setFen, // Pass setFen to allow LC logic to update board for first move
+        setFen,
       })
         .then((result) => {
-          setIsLightningCaptureActive(false); // Always deactivate after attempt
-           setIsAwaitingSecondLcMove(false); // Reset awaiting state
-           setLcPossibleSecondMoves([]);
-           setLcFirstMoveDetails(null);
-           setLcSecondMoveResolver(null); // Clear resolver
+          // Logic from Step 1 (already implemented)
+          if (result.moveData) {
+            // ... successfully sent ...
+            // setIsLightningCaptureActive(false); etc.
+            // (Handled by previous step's logic)
+          } else if (result.attempted) {
+            // LC attempt was made but failed (e.g., first move not a capture, user cancelled second move)
+            console.log(
+              "[ChessGame makeMove] Lightning Capture attempt failed or was cancelled.",
+            );
+            // game.load(originalFenForLC) and setFen(originalFenForLC) are already called in this path by the previous subtask.
+            // setIsLightningCaptureActive(false) and other state resets are also already handled.
 
-           if (result.attempted && result.moveData) {
-            console.log("[ChessGame makeMove] Lightning Capture successful, emitting move:", result.moveData);
-            // FEN is already updated by handleLightningCaptureClient via setFen
-            socket.emit("sendMove", { roomId, move: result.moveData });
-            // Server will confirm and then client will set lightningCaptureState.used = true via echo
-
-            // Check game over states locally after successful LC
-            const finalGame = new Chess(gameInstanceForLC.fen()); // gameInstanceForLC was mutated
-            if (finalGame.isCheckmate()) {
-              const winner = finalGame.turn() === "w" ? "black" : "white";
-              setGameOverMessage(`${winner} wins by checkmate`);
-              socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate using Lightning Capture!`, winnerColor: myColor });
-            } else if (finalGame.isDraw()) {
-              setGameOverMessage("Draw");
-              socket.emit("gameDraw", { roomId, message: "Draw after Lightning Capture!" });
+            // Check if it was a failure specifically because the first move was not a capture.
+            if (!isAwaitingSecondLcMove) {
+              // If we are not awaiting the second move, it means the first part failed or was cancelled from prompt.
+              alert(
+                "Lightning Capture requires a valid capture as the first move. Please try again after re-activating.",
+              );
+            } else {
+              // If we *were* awaiting the second move, it means cancellation happened during/after the prompt.
+              alert("Lightning Capture sequence cancelled.");
             }
+            // Note: The states (isLightningCaptureActive, isAwaitingSecondLcMove) are already reset by previous step's logic here.
           } else {
-            console.log("[ChessGame makeMove] Lightning Capture attempt failed or was cancelled.");
-            game.load(originalFenForLC);
-            setFen(originalFenForLC);
+            // ... not attempted (e.g. already used) ...
+            // setIsLightningCaptureActive(false); etc.
+            // (Handled by previous step's logic)
           }
         })
-        .catch(error => {
-          console.error("Error during Lightning Capture:", error);
-          setIsLightningCaptureActive(false);
-          setIsAwaitingSecondLcMove(false);
-          setLcPossibleSecondMoves([]);
-          setLcFirstMoveDetails(null);
-          setLcSecondMoveResolver(null);
-          game.load(originalFenForLC); // Revert to original FEN on error
-          setFen(originalFenForLC);
+        .catch((error) => {
+          // Logic from Step 1 (already implemented)
+          // console.error(...);
+          // setIsLightningCaptureActive(false); etc.
+          // game.load(originalFenForLC); setFen(originalFenForLC);
+          // (Handled by previous step's logic)
+          alert(
+            "An error occurred during Lightning Capture. The action has been cancelled.",
+          );
         });
-      return;
+
+      // By returning null, we tell react-chessboard that the move is not valid *yet* from its perspective.
+      // If the first part of LC is valid, setFen inside handleLightningCaptureClient will update the board.
+      // If it's invalid, the board would have snapped back, and the alert will inform the user.
+      return null;
     }
 
     // Royal Escort Logic
@@ -469,16 +626,20 @@ export default function ChessGame() {
         setFen(game.fen());
         socket.emit("sendMove", { roomId, move: royalEscortResult.moveData });
 
-        setRoyalEscortState(prevState => ({
+        setRoyalEscortState((prevState) => ({
           ...prevState!,
           usedCount: prevState!.usedCount + 1,
         }));
-        
+
         // Game over checks
         if (game.isCheckmate()) {
           const winner = game.turn() === "w" ? "black" : "white";
           setGameOverMessage(`${winner} wins by checkmate`);
-          socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate!`, winnerColor: myColor });
+          socket.emit("gameOver", {
+            roomId,
+            message: `${myColor} wins by checkmate!`,
+            winnerColor: myColor,
+          });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
           socket.emit("gameDraw", { roomId, message: "Draw!" });
@@ -487,37 +648,58 @@ export default function ChessGame() {
           socket.emit("gameDraw", { roomId, message: "Stalemate!" });
         } else if (game.isThreefoldRepetition()) {
           setGameOverMessage("Draw by Threefold Repetition");
-           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by threefold repetition!",
+          });
         } else if (game.isInsufficientMaterial()) {
-           setGameOverMessage("Draw by Insufficient Material");
-           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+          setGameOverMessage("Draw by Insufficient Material");
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by insufficient material!",
+          });
         }
         return royalEscortResult.moveData;
       } else if (royalEscortResult.attempted) {
         // Invalid Royal Escort attempt (e.g., puts king in check)
-        return null; 
+        return null;
       }
       // If not attempted, fall through to other advantages / standard move
     }
 
     // Pawn Rush logic
-    if (!move && myAdvantage?.id === "pawn_rush" && myColor) { 
-      const pawnRushMove = handlePawnRushClient({ game, from, to, color: myColor });
+    if (!move && myAdvantage?.id === "pawn_rush" && myColor) {
+      const pawnRushMove = handlePawnRushClient({
+        game,
+        from,
+        to,
+        color: myColor,
+      });
       if (pawnRushMove) {
-        move = pawnRushMove; 
+        move = pawnRushMove;
       }
     }
 
     // Castle Master logic
     // Note: Added '!move &&' to ensure it doesn't try if Pawn Rush already prepared a move.
-    if (!move && myAdvantage?.id === "castle_master" && !hasUsedCastleMaster.current && myColor) {
-     const castleMasterResult = handleCastleMasterClient({ game, from, to, color: myColor });
+    if (
+      !move &&
+      myAdvantage?.id === "castle_master" &&
+      !hasUsedCastleMaster.current &&
+      myColor
+    ) {
+      const castleMasterResult = handleCastleMasterClient({
+        game,
+        from,
+        to,
+        color: myColor,
+      });
 
       if (castleMasterResult.moveData) {
-        setFen(game.fen()); 
-        move = castleMasterResult.moveData; 
+        setFen(game.fen());
+        move = castleMasterResult.moveData;
       }
-      
+
       if (castleMasterResult.advantageUsed) {
         hasUsedCastleMaster.current = true;
       }
@@ -525,34 +707,49 @@ export default function ChessGame() {
       if (castleMasterResult.moveData) {
         socket.emit("sendMove", { roomId, move: castleMasterResult.moveData });
         // Game over checks after emitting Castle Master move
-        if (game.isCheckmate()) { 
-            const winnerLogic = game.turn() === "w" ? "black" : "white"; // Winner is the one whose opponent is checkmated
-            setGameOverMessage(`${winnerLogic} wins by checkmate`);
-            socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
-        } else if (game.isDraw()) { 
-            setGameOverMessage("Draw");
-            socket.emit("gameDraw", { roomId, message: "Draw!" });
-        }  else if (game.isStalemate()) {
+        if (game.isCheckmate()) {
+          const winnerLogic = game.turn() === "w" ? "black" : "white"; // Winner is the one whose opponent is checkmated
+          setGameOverMessage(`${winnerLogic} wins by checkmate`);
+          socket.emit("gameOver", {
+            roomId,
+            message: `${winnerLogic} wins by checkmate!`,
+            winnerColor: winnerLogic,
+          });
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+          socket.emit("gameDraw", { roomId, message: "Draw!" });
+        } else if (game.isStalemate()) {
           setGameOverMessage("Draw by Stalemate");
           socket.emit("gameDraw", { roomId, message: "Stalemate!" });
         } else if (game.isThreefoldRepetition()) {
-           setGameOverMessage("Draw by Threefold Repetition");
-           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+          setGameOverMessage("Draw by Threefold Repetition");
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by threefold repetition!",
+          });
         } else if (game.isInsufficientMaterial()) {
-           setGameOverMessage("Draw by Insufficient Material");
-           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+          setGameOverMessage("Draw by Insufficient Material");
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by insufficient material!",
+          });
         }
-        return castleMasterResult.moveData; 
+        return castleMasterResult.moveData;
       } else if (castleMasterResult.advantageUsed) {
         // Advantage was attempted (e.g. king moved one square next to rook) but no special move was made.
         // Block standard move if it was a failed special action.
-        return null; 
+        return null;
       }
     }
 
     // Focused Bishop Logic
     // Note: Added '!move &&'
-    if (!move && myAdvantage?.id === "focused_bishop" && !hasUsedFocusedBishop.current && myColor) {
+    if (
+      !move &&
+      myAdvantage?.id === "focused_bishop" &&
+      !hasUsedFocusedBishop.current &&
+      myColor
+    ) {
       const focusedBishopResult = handleFocusedBishopClient({
         game,
         from,
@@ -561,36 +758,49 @@ export default function ChessGame() {
         hasUsedFocusedBishop: hasUsedFocusedBishop.current,
       });
       if (focusedBishopResult.moveData) {
-        setFen(game.fen()); 
-        move = focusedBishopResult.moveData; 
+        setFen(game.fen());
+        move = focusedBishopResult.moveData;
       }
       if (focusedBishopResult.advantageUsedAttempt) {
-        hasUsedFocusedBishop.current = true; 
+        hasUsedFocusedBishop.current = true;
         if (focusedBishopResult.moveData) {
-          socket.emit("sendMove", { roomId, move: focusedBishopResult.moveData });
+          socket.emit("sendMove", {
+            roomId,
+            move: focusedBishopResult.moveData,
+          });
           // Game over checks
-          if (game.isCheckmate()) { 
+          if (game.isCheckmate()) {
             const winnerLogic = game.turn() === "w" ? "black" : "white";
             setGameOverMessage(`${winnerLogic} wins by checkmate`);
-            socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
-          } else if (game.isDraw()) { 
+            socket.emit("gameOver", {
+              roomId,
+              message: `${winnerLogic} wins by checkmate!`,
+              winnerColor: winnerLogic,
+            });
+          } else if (game.isDraw()) {
             setGameOverMessage("Draw");
             socket.emit("gameDraw", { roomId, message: "Draw!" });
           } else if (game.isStalemate()) {
             setGameOverMessage("Draw by Stalemate");
             socket.emit("gameDraw", { roomId, message: "Stalemate!" });
           } else if (game.isThreefoldRepetition()) {
-             setGameOverMessage("Draw by Threefold Repetition");
-             socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+            setGameOverMessage("Draw by Threefold Repetition");
+            socket.emit("gameDraw", {
+              roomId,
+              message: "Draw by threefold repetition!",
+            });
           } else if (game.isInsufficientMaterial()) {
-             setGameOverMessage("Draw by Insufficient Material");
-             socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+            setGameOverMessage("Draw by Insufficient Material");
+            socket.emit("gameDraw", {
+              roomId,
+              message: "Draw by insufficient material!",
+            });
           }
-          return focusedBishopResult.moveData; 
+          return focusedBishopResult.moveData;
         } else {
           // Focused Bishop was attempted (hasUsedFocusedBishop set to true) but no valid move was made.
           // Block standard move.
-          return null; 
+          return null;
         }
       }
     }
@@ -598,7 +808,10 @@ export default function ChessGame() {
     // Corner Blitz Logic
     // Note: Added '!move &&'
     if (!move && myAdvantage?.id === "corner_blitz" && myColor) {
-      console.log("[ChessGame] makeMove: Checking Corner Blitz for", { from, to });
+      console.log("[ChessGame] makeMove: Checking Corner Blitz for", {
+        from,
+        to,
+      });
       const cornerBlitzResult = handleCornerBlitzClient({
         game,
         from,
@@ -606,7 +819,10 @@ export default function ChessGame() {
         color: myColor,
         playerRooksMoved: playerRooksMoved.current,
       });
-      console.log("[ChessGame] makeMove: Corner Blitz result:", cornerBlitzResult);
+      console.log(
+        "[ChessGame] makeMove: Corner Blitz result:",
+        cornerBlitzResult,
+      );
 
       if (cornerBlitzResult.moveData) {
         // Valid Corner Blitz move constructed and applied locally by handleCornerBlitzClient
@@ -617,18 +833,28 @@ export default function ChessGame() {
             ...playerRooksMoved.current,
             [cornerBlitzResult.rookMovedKey]: true,
           };
-          console.log("[ChessGame] makeMove: Updated playerRooksMoved:", playerRooksMoved.current);
+          console.log(
+            "[ChessGame] makeMove: Updated playerRooksMoved:",
+            playerRooksMoved.current,
+          );
         }
-        
+
         // Emit the special move to the server
-        console.log("[ChessGame] makeMove: Emitting Corner Blitz move to server:", cornerBlitzResult.moveData);
+        console.log(
+          "[ChessGame] makeMove: Emitting Corner Blitz move to server:",
+          cornerBlitzResult.moveData,
+        );
         socket.emit("sendMove", { roomId, move: cornerBlitzResult.moveData });
-        
+
         // Check for game over states immediately after this client-side validated special move
         if (game.isCheckmate()) {
           const winnerLogic = game.turn() === "w" ? "black" : "white";
           setGameOverMessage(`${winnerLogic} wins by checkmate`);
-          socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
+          socket.emit("gameOver", {
+            roomId,
+            message: `${winnerLogic} wins by checkmate!`,
+            winnerColor: winnerLogic,
+          });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
           socket.emit("gameDraw", { roomId, message: "Draw!" });
@@ -636,20 +862,31 @@ export default function ChessGame() {
           setGameOverMessage("Draw by Stalemate");
           socket.emit("gameDraw", { roomId, message: "Stalemate!" });
         } else if (game.isThreefoldRepetition()) {
-           setGameOverMessage("Draw by Threefold Repetition");
-           socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+          setGameOverMessage("Draw by Threefold Repetition");
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by threefold repetition!",
+          });
         } else if (game.isInsufficientMaterial()) {
-           setGameOverMessage("Draw by Insufficient Material");
-           socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+          setGameOverMessage("Draw by Insufficient Material");
+          socket.emit("gameDraw", {
+            roomId,
+            message: "Draw by insufficient material!",
+          });
         }
         // IMPORTANT: Return early to prevent this move from being processed by standard game.move()
-        return cornerBlitzResult.moveData; 
-      } else if (cornerBlitzResult.rookMovedKey && !cornerBlitzResult.moveData) {
+        return cornerBlitzResult.moveData;
+      } else if (
+        cornerBlitzResult.rookMovedKey &&
+        !cornerBlitzResult.moveData
+      ) {
         // This means a Corner Blitz move was *attempted* with a valid rook (rookMovedKey is set),
         // but it was invalid (e.g., put king in check, or target square blocked).
         // We should not fall through to standard move logic in this case.
-        console.log(`[ChessGame] makeMove: Corner Blitz attempt for rook ${cornerBlitzResult.rookMovedKey} failed locally. Not sending to server or trying as standard move.`);
-        return null; 
+        console.log(
+          `[ChessGame] makeMove: Corner Blitz attempt for rook ${cornerBlitzResult.rookMovedKey} failed locally. Not sending to server or trying as standard move.`,
+        );
+        return null;
       }
       // If rookMovedKey was null, it means it wasn't even a Corner Blitz attempt (e.g., wrong piece clicked),
       // so we fall through, and 'move' remains undefined, allowing standard logic or other advantages.
@@ -658,27 +895,37 @@ export default function ChessGame() {
     // Fallback: standard move
     // This block is reached if 'move' is still undefined (no special advantage handled it and returned early)
     if (!move) {
-      console.log("[ChessGame] makeMove: Attempting as standard move for", { from, to });
+      console.log("[ChessGame] makeMove: Attempting as standard move for", {
+        from,
+        to,
+      });
       const piece = game.get(from as Square);
-      const isPawnPromotion = piece?.type === "p" &&
-        ((piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1"));
+      const isPawnPromotion =
+        piece?.type === "p" &&
+        ((piece.color === "w" && to[1] === "8") ||
+          (piece.color === "b" && to[1] === "1"));
       try {
         const gameForStandardMove = new Chess(fenSnapshotBeforeMove.current);
         const standardMoveAttempt = gameForStandardMove.move({
           from,
           to,
-          ...(isPawnPromotion ? { promotion: "q" } : {})
+          ...(isPawnPromotion ? { promotion: "q" } : {}),
         });
         if (standardMoveAttempt) {
           move = standardMoveAttempt;
           game.load(gameForStandardMove.fen());
           setFen(game.fen());
         } else {
-           console.log("[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).");
-           return null;
-          }
+          console.log(
+            "[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).",
+          );
+          return null;
+        }
       } catch (err: any) {
-        console.error("[ChessGame] makeMove: game.move() threw an error:", err.message);
+        console.error(
+          "[ChessGame] makeMove: game.move() threw an error:",
+          err.message,
+        );
         alert("Invalid move: " + err.message);
         return null;
       }
@@ -686,36 +933,49 @@ export default function ChessGame() {
 
     // Emit standard moves or special moves that didn't emit themselves and return early
     // (This block should now primarily handle standard moves if 'move' got populated by the standard logic)
-    if (move) { 
+    if (move) {
       // If 'move' is populated here, it means it was a successful standard move or pawn rush.
       // Special moves like Corner Blitz, Focused Bishop, Castle Master should have returned earlier.
-      console.log("[ChessGame] makeMove: Emitting standard or Pawn Rush move to server:", move);
+      console.log(
+        "[ChessGame] makeMove: Emitting standard or Pawn Rush move to server:",
+        move,
+      );
       setFen(game.fen()); // Ensure FEN is updated for standard moves too
       socket.emit("sendMove", { roomId, move });
 
       // Game over checks for standard moves / Pawn Rush
-      if (game.isCheckmate()) { 
+      if (game.isCheckmate()) {
         const winnerLogic = game.turn() === "w" ? "black" : "white";
         setGameOverMessage(`${winnerLogic} wins by checkmate`);
-        socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
-      } else if (game.isDraw()) { 
+        socket.emit("gameOver", {
+          roomId,
+          message: `${winnerLogic} wins by checkmate!`,
+          winnerColor: winnerLogic,
+        });
+      } else if (game.isDraw()) {
         setGameOverMessage("Draw");
         socket.emit("gameDraw", { roomId, message: "Draw!" });
-      }  else if (game.isStalemate()) { 
+      } else if (game.isStalemate()) {
         setGameOverMessage("Draw by Stalemate");
         socket.emit("gameDraw", { roomId, message: "Stalemate!" });
       } else if (game.isThreefoldRepetition()) {
         setGameOverMessage("Draw by Threefold Repetition");
-        socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+        socket.emit("gameDraw", {
+          roomId,
+          message: "Draw by threefold repetition!",
+        });
       } else if (game.isInsufficientMaterial()) {
         setGameOverMessage("Draw by Insufficient Material");
-        socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+        socket.emit("gameDraw", {
+          roomId,
+          message: "Draw by insufficient material!",
+        });
       }
     }
     return move; // Return the move object (or null if all attempts failed)
   };
 
-   const handleCancelLc = () => {
+  const handleCancelLc = () => {
     if (lcSecondMoveResolver) {
       lcSecondMoveResolver.resolve(null); // This will trigger the cancel path in handleLightningCaptureClient
     }
@@ -727,75 +987,157 @@ export default function ChessGame() {
     setLcSecondMoveResolver(null);
     game.load(fenSnapshotBeforeMove.current);
     setFen(fenSnapshotBeforeMove.current);
-   };
+  };
 
   return (
     <div style={{ padding: "20px", maxWidth: 600, margin: "0 auto" }}>
-      <h2>Advantage Chess — Room <code>{roomId}</code></h2>
+      <h2>
+        Advantage Chess — Room <code>{roomId}</code>
+      </h2>
 
       <p>
-        You are playing as: <strong>{color ?? "..."}</strong><br />
-        {opponentConnected ? "Opponent connected ✅" : "Waiting for opponent... ⏳"}
+        You are playing as: <strong>{color ?? "..."}</strong>
+        <br />
+        {opponentConnected
+          ? "Opponent connected ✅"
+          : "Waiting for opponent... ⏳"}
       </p>
 
       {myAdvantage && (
-        <div style={{ margin: "10px 0", padding: "10px", background: "#f0f0f0", borderRadius: "4px" }}>
-          <p>Your Advantage: <strong>{myAdvantage.name}</strong></p>
-          {myAdvantage.id === "lightning_capture" && !lightningCaptureState.used && (
-            <>
-              <button
-                onClick={() => setIsLightningCaptureActive(!isLightningCaptureActive)}
-                disabled={lightningCaptureState.used || isAwaitingSecondLcMove}
-                style={{ marginRight: "10px", background: isLightningCaptureActive ? "lightblue" : "" }}
-              >
-                {isLightningCaptureActive ? "Deactivate Lightning Capture" : "Activate Lightning Capture"}
-              </button>
-              {isLightningCaptureActive && !isAwaitingSecondLcMove && <p>Click a piece to make the first (capture) move.</p>}
-            </>
-          )}
-          {myAdvantage.id === "lightning_capture" && lightningCaptureState.used && (
-            <p><em>Lightning Capture has been used.</em></p>
-          )}
-           {isAwaitingSecondLcMove && lcFirstMoveDetails && (
+        <div
+          style={{
+            margin: "10px 0",
+            padding: "10px",
+            background: "#f0f0f0",
+            borderRadius: "4px",
+          }}
+        >
+          <p>
+            Your Advantage: <strong>{myAdvantage.name}</strong>
+          </p>
+          {myAdvantage.id === "lightning_capture" &&
+            !lightningCaptureState.used && (
+              <>
+                <button
+                  onClick={() =>
+                    setIsLightningCaptureActive(!isLightningCaptureActive)
+                  }
+                  disabled={
+                    lightningCaptureState.used || isAwaitingSecondLcMove
+                  }
+                  style={{
+                    marginRight: "10px",
+                    background: isLightningCaptureActive ? "lightblue" : "",
+                  }}
+                >
+                  {isLightningCaptureActive
+                    ? "Deactivate Lightning Capture"
+                    : "Activate Lightning Capture"}
+                </button>
+                {isLightningCaptureActive && !isAwaitingSecondLcMove && (
+                  <p>Click a piece to make the first (capture) move.</p>
+                )}
+              </>
+            )}
+          {myAdvantage.id === "lightning_capture" &&
+            lightningCaptureState.used && (
+              <p>
+                <em>Lightning Capture has been used.</em>
+              </p>
+            )}
+          {isAwaitingSecondLcMove && lcFirstMoveDetails && (
             <div>
-              <p>Lightning Capture: First move from {lcFirstMoveDetails.from} to {lcFirstMoveDetails.to} made.</p>
-              <p><strong>Select the second move for the piece on {lcFirstMoveDetails.to}. Click a highlighted square.</strong></p>
+              <p>
+                Lightning Capture: First move from {lcFirstMoveDetails.from} to{" "}
+                {lcFirstMoveDetails.to} made.
+              </p>
+              <p>
+                <strong>
+                  Select the second move for the piece on{" "}
+                  {lcFirstMoveDetails.to}. Click a highlighted square.
+                </strong>
+              </p>
               <button onClick={handleCancelLc}>Cancel Lightning Capture</button>
             </div>
           )}
         </div>
       )}
-      
-      <div style={{ position: 'relative' }}>
+
+      <div style={{ position: "relative" }}>
         <Chessboard
           position={fen}
-          onPieceDrop={(from, to) => !!makeMove(from, to)}
+          onPieceDrop={(from, to) => {
+            // Block interaction while second move is being processed
+            if (
+              isAwaitingSecondLcMove &&
+              lcSecondMoveResolver &&
+              lcFirstMoveDetails
+            ) {
+              return true;
+            }
+            return !!makeMove(from, to);
+          }}
           boardWidth={500}
           boardOrientation={color === "black" ? "black" : "white"}
           customSquareStyles={
             isAwaitingSecondLcMove && lcFirstMoveDetails
               ? {
-                  ...lcPossibleSecondMoves.reduce((acc, sq) => ({ ...acc, [sq]: { background: "rgba(255, 255, 0, 0.4)" } }), {}),
-                  [lcFirstMoveDetails.to]: { background: "rgba(0, 255, 0, 0.4)" } // Highlight the piece to move again
+                  ...lcPossibleSecondMoves.reduce(
+                    (acc, sq) => ({
+                      ...acc,
+                      [sq]: { background: "rgba(255, 255, 0, 0.4)" },
+                    }),
+                    {},
+                  ),
+                  [lcFirstMoveDetails.to]: {
+                    background: "rgba(0, 255, 0, 0.4)",
+                  }, // Highlight the piece to move again
                 }
               : {}
           }
         />
       </div>
 
-
       {gameOverMessage && (
-        <div style={{ marginTop: 20, padding: 20, backgroundColor: "#222", color: "#fff", textAlign: "center", borderRadius: 8 }}>
+        <div
+          style={{
+            marginTop: 20,
+            padding: 20,
+            backgroundColor: "#222",
+            color: "#fff",
+            textAlign: "center",
+            borderRadius: 8,
+          }}
+        >
           <h3>{gameOverMessage}</h3>
           {revealedAdvantages && (
             <>
-              <p><strong>Your Advantage:</strong> {color === "white" ? revealedAdvantages.whiteAdvantage?.name : revealedAdvantages.blackAdvantage?.name}</p>
-              <p><strong>Opponent's Advantage:</strong> {color === "white" ? revealedAdvantages.blackAdvantage?.name : revealedAdvantages.whiteAdvantage?.name}</p>
+              <p>
+                <strong>Your Advantage:</strong>{" "}
+                {color === "white"
+                  ? revealedAdvantages.whiteAdvantage?.name
+                  : revealedAdvantages.blackAdvantage?.name}
+              </p>
+              <p>
+                <strong>Opponent's Advantage:</strong>{" "}
+                {color === "white"
+                  ? revealedAdvantages.blackAdvantage?.name
+                  : revealedAdvantages.whiteAdvantage?.name}
+              </p>
             </>
           )}
           <button
             onClick={() => window.location.reload()}
-            style={{ marginTop: 10, padding: "8px 16px", fontSize: "1rem", borderRadius: 6, backgroundColor: "#fff", color: "#000", border: "none", cursor: "pointer" }}
+            style={{
+              marginTop: 10,
+              padding: "8px 16px",
+              fontSize: "1rem",
+              borderRadius: 6,
+              backgroundColor: "#fff",
+              color: "#000",
+              border: "none",
+              cursor: "pointer",
+            }}
           >
             Play Again
           </button>
