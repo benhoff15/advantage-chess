@@ -22,7 +22,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "knightmare", name: "Knightmare", description: "Each knight may make a double L-move once.", rarity: "rare" },
   { id: "void_step", name: "Void Step", description: "One piece can pass through other pieces once.", rarity: "rare"},
   { id: "recall", name: "Recall", description: "Teleport any piece to its position 3 turns ago, once.", rarity: "rare" },
-  { id: "lightning_capture", name: "Lightning Capture", description: "One piece captures and instantly moves again. Can be used only once. Must be activated before use.", rarity: "rare" },
+  { id: "lightning_capture", name: "Lightning Capture", description: "One piece captures and instantly moves again. Can be used only once. Must be activated before use.", rarity: "rare" }, // done
 
   // Legendary (5%)
   { id: "second_wind", name: "Second Wind", description: "After checkmate, get one move to counter-mate.", rarity: "legendary" },

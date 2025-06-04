@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { Square } from "chess.js";
 import { socket } from "../socket";
-import { Advantage, ShieldedPieceInfo, ServerMovePayload } from "../../shared/types"; // Import ServerMovePayload
+import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState } from "../../shared/types"; // Import ServerMovePayload
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
 import {
   handlePawnRushClient,
@@ -77,6 +77,9 @@ export default function ChessGame() {
   const [lcPossibleSecondMoves, setLcPossibleSecondMoves] = useState<string[]>(
     [],
   );
+const [showOpeningSwapPrompt, setShowOpeningSwapPrompt] = useState(false);
+const [openingSwapSelection, setOpeningSwapSelection] = useState<string | null>(null);
+const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | null>(null);
 
   useEffect(() => {
     if (myAdvantage?.id === "royal_escort") {
@@ -97,7 +100,18 @@ export default function ChessGame() {
       // Note: The if(lcSecondMoveResolver) block was here, it's now fully removed.
       // The associated state `lcSecondMoveResolver` itself is also removed.
     }
-  }, [myAdvantage]);
+
+  if (myAdvantage?.id === "opening_swap") {
+    setMyOpeningSwapState({ hasSwapped: false }); // Initialize local state for UI tracking
+    // Show prompt only if game hasn't started and swap not used
+    if (game.history().length === 0 && !myOpeningSwapState?.hasSwapped) {
+      setShowOpeningSwapPrompt(true);
+    }
+  } else {
+    setMyOpeningSwapState(null);
+    setShowOpeningSwapPrompt(false);
+  }
+  }, [myAdvantage, game, myOpeningSwapState?.hasSwapped]); // Added dependencies
 
   useEffect(() => {
     if (!roomId) return;
@@ -440,6 +454,35 @@ export default function ChessGame() {
     };
     socket.on("invalidMove", handleInvalidMove);
 
+    const handleOpeningSwapSuccess = ({ newFen, from, to, color: swapPlayerColor }: { newFen: string; from: string; to: string; color: 'white' | 'black' }) => {
+      console.log(`[ChessGame event] openingSwapSuccess: FEN updated to ${newFen}, ${from} swapped with ${to} by ${swapPlayerColor}`);
+      game.load(newFen);
+      setFen(newFen);
+
+      // If this client performed the swap, ensure UI reflects completion.
+      if (swapPlayerColor === color && myAdvantage?.id === "opening_swap") {
+        setShowOpeningSwapPrompt(false);
+        setOpeningSwapSelection(null);
+        if (myOpeningSwapState) {
+          setMyOpeningSwapState({ ...myOpeningSwapState, hasSwapped: true });
+        }
+      }
+      // Potentially add a visual cue or log for the opponent.
+      // For now, the board update is the primary feedback.
+    };
+    socket.on("openingSwapSuccess", handleOpeningSwapSuccess);
+
+    const handleOpeningSwapFailed = ({ message }: { message: string }) => {
+      console.warn(`[ChessGame event] openingSwapFailed: ${message}`);
+      alert(`Opening Swap Failed: ${message}`);
+      // Reset selection state to allow player to try again or make a different choice
+      setOpeningSwapSelection(null);
+      // Keep the prompt open if it was already open, unless the failure implies it should be closed
+      // For example, if failure is "game already started", then prompt should close.
+      // For now, just resetting selection is fine. The prompt visibility is also tied to game.history().length.
+    };
+    socket.on("openingSwapFailed", handleOpeningSwapFailed);
+
     return () => {
       console.log(
         `[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`,
@@ -452,6 +495,8 @@ export default function ChessGame() {
       socket.off("advantageAssigned", handleAdvantageAssigned);
       socket.off("moveDeflected", handleMoveDeflected);
       socket.off("invalidMove", handleInvalidMove);
+      socket.off("openingSwapSuccess", handleOpeningSwapSuccess);
+      socket.off("openingSwapFailed", handleOpeningSwapFailed);
     };
   }, [
     roomId,
@@ -460,6 +505,7 @@ export default function ChessGame() {
     myAdvantage,
     myShieldedPieceInfo,
     fenSnapshotBeforeMove,
+    myOpeningSwapState
   ]);
   // Note: `game` (useState object) and `fenSnapshotBeforeMove` (ref object) are stable.
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
@@ -467,9 +513,66 @@ export default function ChessGame() {
 
   // promptSecondMove function was here and has been removed.
 
+  // Add this function within the ChessGame component
+  const handleSquareClickForSwap = (square: string) => {
+    if (myAdvantage?.id === "opening_swap" && showOpeningSwapPrompt && !myOpeningSwapState?.hasSwapped && color) {
+      const piece = game.get(square as Square); // react-chessboard gives 'string', chess.js needs 'Square'
+      const playerRank = color === 'white' ? '1' : '8';
+
+      // Check if the square is part of the board, otherwise piece will be null.
+      // Also, ensure there's a piece on the square.
+      if (!piece) {
+        // If a piece was already selected, clicking an empty square could perhaps cancel selection.
+        // For now, only valid pieces can be interacted with for swap.
+        if (openingSwapSelection) {
+          alert("Opening Swap: Please select one of your non-king pieces on your back rank to swap with " + openingSwapSelection + " or click " + openingSwapSelection + " again to deselect.");
+        } else {
+          alert("Opening Swap: Please select one of your non-king pieces on your back rank.");
+        }
+        return; // Clicked on an empty square or invalid square.
+      }
+
+      if (piece.color !== color[0] || square[1] !== playerRank || piece.type === 'k') {
+        alert("Opening Swap: Please select a non-king piece on your back rank.");
+        return; // Invalid selection for swap
+      }
+
+      if (!openingSwapSelection) {
+        setOpeningSwapSelection(square);
+        // Consider adding customSquareStyles here to highlight the selected square
+        alert(`Selected ${square}. Now select the second piece to swap with, or click ${square} again to deselect.`);
+      } else {
+        if (openingSwapSelection === square) { // Clicked the same piece again
+          setOpeningSwapSelection(null); // Deselect
+          // Clear highlighting if it was added
+          alert("Swap selection cancelled.");
+        } else {
+          // Second piece selected
+          console.log(`[Opening Swap] Emitting openingSwap event for ${openingSwapSelection} and ${square}`);
+          socket.emit("openingSwap", { roomId, from: openingSwapSelection, to: square });
+          // UI will be fully hidden on openingSwapSuccess or if player makes a regular move / skips
+          setOpeningSwapSelection(null); // Reset selection
+          // setShowOpeningSwapPrompt(false); // Hide prompt after attempting, server will confirm status
+        }
+      }
+    } else {
+      // If swap is not active, clicks should ideally be ignored by this handler
+      // or fall through to other click logic if any (not the case here for now).
+      // This ensures that regular drag-and-drop for moves is not affected.
+    }
+  };
+
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
     const myColor = color;
+
+    // If opening swap was available but a regular move is made, hide the prompt.
+    if (showOpeningSwapPrompt && game.history().length === 0) {
+      setShowOpeningSwapPrompt(false);
+      // Optionally, here you could also set myOpeningSwapState.hasSwapped to true
+      // if making any move means forfeiting the swap.
+      // Or let server handle this if player tries to swap after moving.
+    }
 
     const turn = game.turn();
     if (
@@ -1107,18 +1210,38 @@ export default function ChessGame() {
               <button onClick={handleCancelLc}>Cancel Lightning Capture</button>
             </div>
           )}
+          {myAdvantage?.id === "opening_swap" && showOpeningSwapPrompt && !myOpeningSwapState?.hasSwapped && (
+            <div style={{ marginTop: '10px', padding: '10px', background: '#e0e0ff', borderRadius: '4px' }}>
+              <h4>Opening Swap</h4>
+              {openingSwapSelection ? (
+                <p>Selected {openingSwapSelection}. Select another piece on your back rank to swap with, or cancel.</p>
+              ) : (
+                <p>Select two non-king pieces on your back rank to swap them. Click a piece to select.</p>
+              )}
+              <button onClick={() => {
+                setShowOpeningSwapPrompt(false);
+                setOpeningSwapSelection(null);
+                // Optionally, inform server the player skipped (though not strictly necessary if they just make a move)
+              }}>Skip Swap / Cancel</button>
+            </div>
+          )}
         </div>
       )}
 
       <div style={{ position: "relative" }}>
         <Chessboard
           position={fen}
+          onSquareClick={handleSquareClickForSwap} // Add this prop
           onPieceDrop={(from, to) => {
-            // Block interaction while second move is being processed
+            // Block interaction while second move is being processed for LC
             if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
                makeMove(from, to); 
                return true; 
             }
+            // Ensure that onPieceDrop does not interfere with swap if swap is active.
+            // However, since swap is click based now, this might not be an issue.
+            // If a piece is dropped while swap prompt is open, it's likely a regular move attempt.
+            // The makeMove function already handles hiding the prompt if a move is made.
             return !!makeMove(from, to); // For non-LC moves or first LC move
           }}
           boardWidth={500}
@@ -1136,6 +1259,10 @@ export default function ChessGame() {
                   [lcFirstMoveDetails.to]: {
                     background: "rgba(0, 255, 0, 0.4)",
                   }, // Highlight the piece to move again
+                }
+              : openingSwapSelection // Highlight for Opening Swap selection
+              ? {
+                  [openingSwapSelection]: { background: "rgba(255, 220, 0, 0.6)" },
                 }
               : {}
           }

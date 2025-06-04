@@ -23,9 +23,14 @@ export interface LightningCaptureState {
   used: boolean;
 }
 
+export interface OpeningSwapState {
+  hasSwapped: boolean;
+}
+
 export interface PlayerAdvantageStates {
   royalEscort?: RoyalEscortState;
   lightningCapture?: LightningCaptureState;
+  openingSwap?: OpeningSwapState;
   // Add other advantage states here as needed
 }
 

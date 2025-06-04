@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -48,6 +48,8 @@ type RoomState = {
     white: ShieldedPieceInfo | null;
     black: ShieldedPieceInfo | null;
   };
+  whiteOpeningSwapState?: OpeningSwapState;
+  blackOpeningSwapState?: OpeningSwapState;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -176,6 +178,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteLightningCaptureState = { used: false }; // Initialize
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
+            } else if (room.whiteAdvantage.id === "opening_swap") {
+                room.whiteOpeningSwapState = { hasSwapped: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -200,6 +206,10 @@ export function setupSocketHandlers(io: Server) {
                 room.blackLightningCaptureState = { used: false }; // Initialize
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Lightning Capture, state initialized.`);
+            } else if (room.blackAdvantage.id === "opening_swap") {
+                room.blackOpeningSwapState = { hasSwapped: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Opening Swap, state initialized.`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -627,6 +637,104 @@ export function setupSocketHandlers(io: Server) {
         }
 
       });
+    });
+
+    socket.on("openingSwap", ({ roomId, from, to }: { roomId: string; from: string; to: string }) => {
+      const room = rooms[roomId];
+      const playerSocketId = socket.id;
+
+      if (!room) {
+        socket.emit("openingSwapFailed", { message: "Room not found." });
+        return;
+      }
+
+      const serverGame = new Chess(room.fen);
+      let playerColor: 'white' | 'black' | null = null;
+      let playerAdvantage: Advantage | undefined;
+      let playerOpeningSwapState: OpeningSwapState | undefined;
+
+      if (room.white === playerSocketId) {
+        playerColor = 'white';
+        playerAdvantage = room.whiteAdvantage;
+        playerOpeningSwapState = room.whiteOpeningSwapState;
+      } else if (room.black === playerSocketId) {
+        playerColor = 'black';
+        playerAdvantage = room.blackAdvantage;
+        playerOpeningSwapState = room.blackOpeningSwapState;
+      } else {
+        socket.emit("openingSwapFailed", { message: "Player not found in this room." });
+        return;
+      }
+
+      // Validation
+      if (playerAdvantage?.id !== "opening_swap") {
+        socket.emit("openingSwapFailed", { message: "You do not have the Opening Swap advantage." });
+        return;
+      }
+
+      if (playerOpeningSwapState?.hasSwapped) {
+        socket.emit("openingSwapFailed", { message: "You have already used the Opening Swap." });
+        return;
+      }
+
+      // Check if it's before the player's first actual move.
+      // This can be tricky. A simple check is history length, but need to ensure it's THEIR first move.
+      // For simplicity, we'll allow swap if game history is 0, assuming server controls game start properly.
+      // More robust: check serverGame.history({verbose:true}) for moves by this player.
+      // Or, ensure this event can only be processed if no 'sendMove' has been successfully processed for this player.
+      // Current implementation of client sends this before any move, so history length 0 is a good start.
+      if (serverGame.history().length > 0) {
+          // A more specific check could be added here to see if THIS player has moved.
+          // For now, any move on the board prevents the swap.
+          socket.emit("openingSwapFailed", { message: "Opening Swap can only be used before the first move of the game." });
+          return;
+      }
+      
+      const playerRank = playerColor === 'white' ? '1' : '8';
+      if (from[1] !== playerRank || to[1] !== playerRank) {
+        socket.emit("openingSwapFailed", { message: "Both pieces must be on your back rank." });
+        return;
+      }
+
+      if (from === to) {
+        socket.emit("openingSwapFailed", { message: "Cannot swap a piece with itself." });
+        return;
+      }
+
+      const pieceFrom = serverGame.get(from as any);
+      const pieceTo = serverGame.get(to as any);
+
+      if (!pieceFrom || !pieceTo) {
+        socket.emit("openingSwapFailed", { message: "Invalid squares selected." });
+        return;
+      }
+
+      if (pieceFrom.color !== playerColor[0] || pieceTo.color !== playerColor[0]) {
+          socket.emit("openingSwapFailed", { message: "You can only swap your own pieces." });
+          return;
+      }
+
+      if (pieceFrom.type === 'k' || pieceTo.type === 'k') {
+        socket.emit("openingSwapFailed", { message: "The King cannot be swapped." });
+        return;
+      }
+
+      // Perform the swap
+      serverGame.remove(from as any);
+      serverGame.remove(to as any);
+      serverGame.put(pieceFrom, to as any);
+      serverGame.put(pieceTo, from as any);
+
+      room.fen = serverGame.fen(); // Update room FEN
+
+      if (playerColor === 'white' && room.whiteOpeningSwapState) {
+        room.whiteOpeningSwapState.hasSwapped = true;
+      } else if (playerColor === 'black' && room.blackOpeningSwapState) {
+        room.blackOpeningSwapState.hasSwapped = true;
+      }
+
+      console.log(`[Opening Swap SUCCESS] Room ${roomId}, Player ${playerColor} swapped ${from} and ${to}. New FEN: ${room.fen}`);
+      io.to(roomId).emit("openingSwapSuccess", { newFen: room.fen, from, to, color: playerColor });
     });
 
     socket.on("disconnect", () => {
