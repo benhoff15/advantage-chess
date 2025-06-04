@@ -116,12 +116,13 @@ export const applyLightningCaptureOpponentMove = ({
   game,
   receivedMove,
 }: ApplyLightningCaptureOpponentMoveParams): boolean => {
-  // Ensure secondTo is present, as per updated interface where it's non-optional.
-  // This check is more of a safeguard if the type wasn't strictly enforced by the caller.
   if (!receivedMove.secondTo) { 
      console.error("[applyLCOpponentMove] Critical: secondTo is missing in receivedMove:", receivedMove);
      return false;
   }
+
+  // Preserve original FEN in case we need to revert fully due to an unexpected error during FEN manipulation
+  const originalFenBeforeApply = game.fen(); 
 
   const first = game.move({ 
     from: receivedMove.from as Square, 
@@ -131,8 +132,29 @@ export const applyLightningCaptureOpponentMove = ({
 
   if (!first) {
     console.error('Failed to apply first part of opponent Lightning Capture:', receivedMove);
+    // game.fen() is still originalFenBeforeApply here if first move failed before any change
     return false;
   }
+
+  // FIX: Set turn back to the opponent (the one making the LC move) for the second move
+  const fenAfterFirstClientMove = game.fen();
+  const fenParts = fenAfterFirstClientMove.split(' ');
+  fenParts[1] = receivedMove.color[0]; // receivedMove.color is 'white' or 'black', so [0] gives 'w' or 'b'
+  const fenForSecondClientMove = fenParts.join(' ');
+  
+  try {
+    game.load(fenForSecondClientMove);
+  } catch (e) {
+    console.error('[applyLCOpponentMove] CRITICAL: Failed to load FEN with corrected turn before second move:', e);
+    // Attempt to revert to the FEN before this function was called
+    try {
+        game.load(originalFenBeforeApply);
+    } catch (revertError) {
+        console.error('[applyLCOpponentMove] CRITICAL: Failed to revert to original FEN after load error. Client desynced.', revertError);
+    }
+    return false; // Indicate failure
+  }
+  // END FIX
 
   const second = game.move({ 
     from: receivedMove.to as Square, // 'from' for the second move is the 'to' of the first
@@ -141,13 +163,15 @@ export const applyLightningCaptureOpponentMove = ({
   });
 
   if (!second) {
-    console.error('Failed to apply second part of opponent Lightning Capture:', receivedMove);
-    const undoneMove = game.undo(); // Attempt to undo the first move
-    if (!undoneMove) {
-        // This is a critical error state for the client, FEN sync might be needed.
-        console.error("CRITICAL: Failed to undo first part of LC after second part failed for opponent. Client desynced.");
-    } else {
-        console.log("Successfully undid the first part of opponent's LC move after second part failed.");
+    console.error('Failed to apply second part of opponent Lightning Capture:', receivedMove, 'FEN was:', game.fen());
+    // Attempt to revert to the state *before* the first part of this function's operations
+    // game.undo() here would undo the corrected turn load, then the first move.
+    // A simpler revert is to load the FEN that was active when this function was called.
+    try {
+        game.load(originalFenBeforeApply);
+         console.log("Successfully reverted to FEN before applyLightningCaptureOpponentMove due to second move failure.");
+    } catch (revertError) {
+        console.error("CRITICAL: Failed to revert to original FEN after second part failed. Client desynced.", revertError);
     }
     return false;
   }

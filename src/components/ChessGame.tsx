@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { Square } from "chess.js";
 import { socket } from "../socket";
-import { Advantage, ShieldedPieceInfo } from "../../shared/types";
+import { Advantage, ShieldedPieceInfo, ServerMovePayload } from "../../shared/types"; // Import ServerMovePayload
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
 import {
   handlePawnRushClient,
@@ -126,20 +126,10 @@ export default function ChessGame() {
     };
     socket.on("opponentDisconnected", handleOpponentDisconnected);
 
-    // Updated ServerMovePayload to include optional secondTo for Lightning Capture
-    type ServerMovePayload = {
-      from: string;
-      to: string;
-      special?: string;
-      color?: "white" | "black";
-      rookFrom?: string; // Example for Castle Master
-      rookTo?: string;   // Example for Castle Master
-      promotion?: string;
-      secondTo?: string; // Added for Lightning Capture
-    };
+    // ServerMovePayload is now imported from shared/types
     
     type ReceiveMoveEventData = {
-      move: ServerMovePayload; // Uses the updated ServerMovePayload
+      move: ServerMovePayload; // Uses the imported ServerMovePayload
       updatedShieldedPiece?: ShieldedPieceInfo;
     };
 

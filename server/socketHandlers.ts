@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -20,17 +20,6 @@ import { validateLightningCaptureServerMove } from './logic/advantages/lightning
 import { LightningCaptureState } from "../shared/types";
 
 console.log("setupSocketHandlers loaded");
-
-// Module-level definition for ClientMovePayload
-type ClientMovePayload = {
-  from: string;
-  to: string;
-  special?: string;
-  color?: 'white' | 'black'; // color is optional and can be 'white' or 'black'
-  rookFrom?: string;
-  rookTo?: string;
-  promotion?: string;
-};
 
 type PlayerStats = {
   gamesPlayed: number;
@@ -260,7 +249,7 @@ export function setupSocketHandlers(io: Server) {
         }
         
         let moveResult: Move | null = null; 
-        const receivedMove = clientMoveData as ClientMovePayload;
+        const receivedMove = clientMoveData as ServerMovePayload; // Use ServerMovePayload
         const originalFenBeforeAttempt = room.fen!; // Assert non-null if sure room.fen exists
 
         // Fetch advantage states for the current player
@@ -579,7 +568,7 @@ export function setupSocketHandlers(io: Server) {
             console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
             
             // Ensure the move data to be broadcast includes the sender's color
-            const moveDataForBroadcast: ClientMovePayload = {
+            const moveDataForBroadcast: ServerMovePayload = { // Use ServerMovePayload
                 ...clientMoveData, // Spread original client move data
                 color: senderColor! // Explicitly set/override color with server's authoritative senderColor
                                    // The '!' asserts senderColor is not null here, which it should be.

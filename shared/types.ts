@@ -28,3 +28,14 @@ export interface PlayerAdvantageStates {
   lightningCapture?: LightningCaptureState;
   // Add other advantage states here as needed
 }
+
+export interface ServerMovePayload {
+  from: string;
+  to: string;
+  special?: string;
+  color?: "white" | "black";
+  rookFrom?: string;
+  rookTo?: string;
+  promotion?: string;
+  secondTo?: string; // For Lightning Capture
+}
