@@ -69,9 +69,7 @@ export default function ChessGame() {
   const [isLightningCaptureActive, setIsLightningCaptureActive] =
     useState(false);
   const [isAwaitingSecondLcMove, setIsAwaitingSecondLcMove] = useState(false);
-  const [lcSecondMoveResolver, setLcSecondMoveResolver] = useState<{
-    resolve: (to: string | null) => void;
-  } | null>(null);
+  const [lcFenAfterFirstMove, setLcFenAfterFirstMove] = useState<string | null>(null);
   const [lcFirstMoveDetails, setLcFirstMoveDetails] = useState<{
     from: string;
     to: string;
@@ -96,12 +94,10 @@ export default function ChessGame() {
       setIsAwaitingSecondLcMove(false);
       setLcPossibleSecondMoves([]);
       setLcFirstMoveDetails(null);
-      if (lcSecondMoveResolver) {
-        lcSecondMoveResolver.resolve(null); // Resolve any pending prompt
-        setLcSecondMoveResolver(null);
-      }
+      // Note: The if(lcSecondMoveResolver) block was here, it's now fully removed.
+      // The associated state `lcSecondMoveResolver` itself is also removed.
     }
-  }, [myAdvantage, lcSecondMoveResolver]);
+  }, [myAdvantage]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -457,37 +453,7 @@ export default function ChessGame() {
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
   // handleAdvantageAssigned, and the logging in cleanup depend on their current values.
 
-  const promptSecondMove = React.useCallback(
-    (
-      gameInstanceAfterFirstMove: Chess, // Can be used to display board state to user
-      firstMoveFrom: string,
-      firstMoveTo: string,
-      possibleMoves: Array<Move>,
-    ): Promise<string | null> => {
-      return new Promise((resolve) => {
-        // Log the FEN of the game instance passed, to ensure it's after the first move
-        console.log(
-          "promptSecondMove: Game FEN after first move:",
-          gameInstanceAfterFirstMove.fen(),
-        );
-        console.log(
-          "promptSecondMove: Possible second moves:",
-          possibleMoves.map((m) => m.to),
-        );
-
-        setLcPossibleSecondMoves(possibleMoves.map((m) => m.to));
-        setIsAwaitingSecondLcMove(true);
-        setLcFirstMoveDetails({ from: firstMoveFrom, to: firstMoveTo });
-        setLcSecondMoveResolver({ resolve }); // Store the resolve function
-      });
-    },
-    [
-      setLcPossibleSecondMoves,
-      setIsAwaitingSecondLcMove,
-      setLcFirstMoveDetails,
-      setLcSecondMoveResolver,
-    ],
-  );
+  // promptSecondMove function was here and has been removed.
 
   const makeMove = (from: string, to: string) => {
     if (!color) return null;
@@ -505,23 +471,101 @@ export default function ChessGame() {
     fenSnapshotBeforeMove.current = game.fen();
 
     // Handling the second move of Lightning Capture
-    if (isAwaitingSecondLcMove && lcSecondMoveResolver && lcFirstMoveDetails) {
+    if (isAwaitingSecondLcMove && lcFirstMoveDetails && lcFenAfterFirstMove && myColor) {
+      const selectedSecondSquare = to; // 'to' from onPieceDrop is the selected square for the second move
       console.log(
-        `[ChessGame makeMove] Handling second LC move. From: ${lcFirstMoveDetails.to}, To: ${to}`,
+        `[ChessGame makeMove] Handling second LC move. Piece moved from ${lcFirstMoveDetails.to} to ${selectedSecondSquare}. Initial move was ${lcFirstMoveDetails.from} -> ${lcFirstMoveDetails.to}.`,
       );
-      // Check if 'to' is a valid second move destination
-      if (!lcPossibleSecondMoves.includes(to)) {
-        alert(
-          "Invalid second move for Lightning Capture. Click a highlighted square.",
-        );
+
+      if (!lcPossibleSecondMoves.includes(selectedSecondSquare)) {
+        alert("Invalid second move for Lightning Capture. Click a highlighted square.");
         return null;
       }
-      lcSecondMoveResolver.resolve(to);
-      return null;
+
+      const gameForSecondLcMove = new Chess(lcFenAfterFirstMove);
+      // Force turn for the second move
+      const parts = gameForSecondLcMove.fen().split(" ");
+      parts[1] = myColor === "white" ? "w" : "b";
+      try {
+        gameForSecondLcMove.load(parts.join(" "));
+      } catch (e) {
+        console.error("Error loading FEN for second LC move:", e);
+        // Revert and reset
+        game.load(fenSnapshotBeforeMove.current);
+        setFen(fenSnapshotBeforeMove.current);
+        setIsLightningCaptureActive(false);
+        setIsAwaitingSecondLcMove(false);
+        setLcPossibleSecondMoves([]);
+        setLcFirstMoveDetails(null);
+        setLcFenAfterFirstMove(null);
+        return null;
+      }
+      
+      const actualSecondMove = gameForSecondLcMove.move({
+        from: lcFirstMoveDetails.to, // This is where the piece landed after the first move
+        to: selectedSecondSquare,
+        promotion: 'q', // Default promotion
+      });
+
+      if (actualSecondMove) {
+        setFen(gameForSecondLcMove.fen());
+        game.load(gameForSecondLcMove.fen()); // Update main game instance
+
+        socket.emit("sendMove", {
+          roomId,
+          move: {
+            from: lcFirstMoveDetails.from, // Original 'from' of the LC sequence
+            to: lcFirstMoveDetails.to,     // Original 'to' of the first move
+            secondTo: selectedSecondSquare, // The 'to' of the second move
+            special: 'lightning_capture',
+            color: myColor,
+          },
+        });
+
+        setLightningCaptureState({ used: true });
+        setIsLightningCaptureActive(false); // Reset active state
+        setIsAwaitingSecondLcMove(false);
+        setLcPossibleSecondMoves([]);
+        setLcFirstMoveDetails(null);
+        setLcFenAfterFirstMove(null);
+
+        // Game over checks
+        if (game.isCheckmate()) {
+          const winner = game.turn() === "w" ? "black" : "white";
+          setGameOverMessage(`${winner} wins by checkmate`);
+          socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate!`, winnerColor: myColor });
+        } else if (game.isDraw()) {
+          setGameOverMessage("Draw");
+          socket.emit("gameDraw", { roomId, message: "Draw!" });
+        } else if (game.isStalemate()) {
+          setGameOverMessage("Draw by Stalemate");
+          socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+        } else if (game.isThreefoldRepetition()) {
+          setGameOverMessage("Draw by Threefold Repetition");
+          socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+        } else if (game.isInsufficientMaterial()) {
+          setGameOverMessage("Draw by Insufficient Material");
+          socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+        }
+        return actualSecondMove; // Or a simplified object if needed by react-chessboard
+      } else {
+        alert("Lightning Capture: Second move is invalid or resulted in an illegal position.");
+        game.load(fenSnapshotBeforeMove.current); // Revert to state before LC attempt started
+        setFen(fenSnapshotBeforeMove.current);
+        
+        setIsLightningCaptureActive(false);
+        setIsAwaitingSecondLcMove(false);
+        setLcPossibleSecondMoves([]);
+        setLcFirstMoveDetails(null);
+        setLcFenAfterFirstMove(null);
+        return null;
+      }
     }
 
-    if (isLightningCaptureActive && !isAwaitingSecondLcMove) {
-    }
+    // IMPORTANT: The condition for activating LC (attempting the *first* move)
+    // should ensure we are NOT already awaiting the second move.
+    // if (isLightningCaptureActive && !isAwaitingSecondLcMove) { // This was a placeholder, the actual LC activation is below
+    // }
 
     const opponentShieldedPieceInfo: ShieldedPieceInfo | null = null; // Placeholder
     if (
@@ -535,81 +579,66 @@ export default function ChessGame() {
 
     let move: any; // This will hold the move object to be sent or processed
 
-    // Lightning Capture Activation
+    // Lightning Capture Activation (First Move Attempt)
     if (
       myAdvantage?.id === "lightning_capture" &&
-      isLightningCaptureActive &&
-      !lightningCaptureState.used &&
+      isLightningCaptureActive && // LC toggle is on
+      !lightningCaptureState.used && // LC advantage hasn't been fully used up
+      !isAwaitingSecondLcMove && // Crucially, not already waiting for the second part of a LC move
       myColor
     ) {
       console.log(
-        `[ChessGame makeMove] Attempting Lightning Capture from ${from} to ${to}`,
+        `[ChessGame makeMove] Attempting Lightning Capture - First Move from ${from} to ${to}`,
       );
-      const originalFenForLC = fenSnapshotBeforeMove.current; // This is already captured
-      // Add log right after capturing originalFenForLC
-      // console.log('[ChessGame makeMove] originalFenForLC for LC attempt:', originalFenForLC);
-      const gameInstanceForLC = new Chess(originalFenForLC);
+      // fenSnapshotBeforeMove.current is already set at the beginning of makeMove
 
-      // Call handleLightningCaptureClient but don't return from makeMove here.
-      // Let the promise resolve and update state/FEN as needed.
-      // The onPieceDrop will initially cause a snapback if we return null or nothing.
-      // handleLightningCaptureClient will call setFen if the first move is valid.
-      handleLightningCaptureClient({
-        game: gameInstanceForLC,
-        originalFen: originalFenForLC,
+      const gameInstanceForLC = new Chess(fenSnapshotBeforeMove.current);
+
+      // Call the refactored handleLightningCaptureClient (synchronous call)
+      const lcResult = handleLightningCaptureClient({
+        game: gameInstanceForLC, // Pass the copy
+        originalFen: fenSnapshotBeforeMove.current,
         from,
         to,
         color: myColor,
-        lightningCaptureState,
-        promptSecondMove,
-        setFen,
-      })
-        .then((result) => {
-          // Logic from Step 1 (already implemented)
-          if (result.moveData) {
-            // ... successfully sent ...
-            // setIsLightningCaptureActive(false); etc.
-            // (Handled by previous step's logic)
-          } else if (result.attempted) {
-            // LC attempt was made but failed (e.g., first move not a capture, user cancelled second move)
-            console.log(
-              "[ChessGame makeMove] Lightning Capture attempt failed or was cancelled.",
-            );
-            // game.load(originalFenForLC) and setFen(originalFenForLC) are already called in this path by the previous subtask.
-            // setIsLightningCaptureActive(false) and other state resets are also already handled.
+      });
 
-            // Check if it was a failure specifically because the first move was not a capture.
-            if (!isAwaitingSecondLcMove) {
-              // If we are not awaiting the second move, it means the first part failed or was cancelled from prompt.
-              alert(
-                "Lightning Capture requires a valid capture as the first move. Please try again after re-activating.",
-              );
-            } else {
-              // If we *were* awaiting the second move, it means cancellation happened during/after the prompt.
-              alert("Lightning Capture sequence cancelled.");
-            }
-            // Note: The states (isLightningCaptureActive, isAwaitingSecondLcMove) are already reset by previous step's logic here.
-          } else {
-            // ... not attempted (e.g. already used) ...
-            // setIsLightningCaptureActive(false); etc.
-            // (Handled by previous step's logic)
-          }
-        })
-        .catch((error) => {
-          // Logic from Step 1 (already implemented)
-          // console.error(...);
-          // setIsLightningCaptureActive(false); etc.
-          // game.load(originalFenForLC); setFen(originalFenForLC);
-          // (Handled by previous step's logic)
-          alert(
-            "An error occurred during Lightning Capture. The action has been cancelled.",
-          );
-        });
+      if (lcResult.outcome === "success_first_move") {
+        console.log("[ChessGame makeMove] LC First Move SUCCESS:", lcResult);
+        setLcFenAfterFirstMove(lcResult.fenAfterFirstCapture);
+        setLcPossibleSecondMoves(lcResult.possibleSecondMoves.map(m => m.to));
+        setLcFirstMoveDetails({ from, to: lcResult.pieceSquare });
+        setIsAwaitingSecondLcMove(true); // Now waiting for the user to make the second move
+        setFen(lcResult.fenAfterFirstCapture); // Update board to show the first move
+        // isLightningCaptureActive should remain true until the sequence is complete or cancelled
+        return null; // Signal to react-chessboard the move is handled (first part)
+      } else { // lcResult.outcome === "failure"
+        console.log("[ChessGame makeMove] LC First Move FAILED:", lcResult);
+        let failureMessage = `Lightning Capture Failed: ${lcResult.reason}`;
+        if (lcResult.reason === "not_capture") {
+          failureMessage = "Lightning Capture requires a valid capture as the first move.";
+        } else if (lcResult.reason === "no_second_moves") {
+          failureMessage = "Lightning Capture Failed: No valid second moves available after the first capture.";
+        }
+        alert(failureMessage);
 
-      // By returning null, we tell react-chessboard that the move is not valid *yet* from its perspective.
-      // If the first part of LC is valid, setFen inside handleLightningCaptureClient will update the board.
-      // If it's invalid, the board would have snapped back, and the alert will inform the user.
-      return null;
+        // Revert UI and game state if it was optimistically updated or if FEN changed
+        // The main `game` object in ChessGame.tsx was not directly modified by handleLightningCaptureClient
+        // as it operated on a copy. We only need to reset if `setFen` was called or other UI states changed.
+        if (game.fen() !== fenSnapshotBeforeMove.current) {
+          console.log(`[ChessGame makeMove] Reverting game state from ${game.fen()} to ${fenSnapshotBeforeMove.current}`);
+          game.load(fenSnapshotBeforeMove.current);
+          setFen(fenSnapshotBeforeMove.current);
+        }
+
+        // Reset LC states
+        setIsLightningCaptureActive(false); // Deactivate LC button/mode
+        setIsAwaitingSecondLcMove(false);
+        setLcPossibleSecondMoves([]);
+        setLcFirstMoveDetails(null);
+        setLcFenAfterFirstMove(null);
+        return null; // Signal to react-chessboard the move attempt failed
+      }
     }
 
     // Royal Escort Logic
@@ -976,17 +1005,23 @@ export default function ChessGame() {
   };
 
   const handleCancelLc = () => {
-    if (lcSecondMoveResolver) {
-      lcSecondMoveResolver.resolve(null); // This will trigger the cancel path in handleLightningCaptureClient
-    }
     // Reset all LC UI states
     setIsLightningCaptureActive(false);
     setIsAwaitingSecondLcMove(false);
     setLcPossibleSecondMoves([]);
     setLcFirstMoveDetails(null);
-    setLcSecondMoveResolver(null);
-    game.load(fenSnapshotBeforeMove.current);
-    setFen(fenSnapshotBeforeMove.current);
+    setLcFenAfterFirstMove(null); // Reset the new state
+
+    // Revert game to the state before Lightning Capture was initiated
+    if (fenSnapshotBeforeMove.current) { 
+      game.load(fenSnapshotBeforeMove.current);
+      setFen(fenSnapshotBeforeMove.current);
+    } else {
+      // This case should ideally not happen if LC was in progress
+      console.warn("[ChessGame handleCancelLc] fenSnapshotBeforeMove.current was not set, cannot revert.");
+      // As a fallback, could reload current game fen to ensure consistency, though snapshot is preferred.
+      // For now, this implies the board might not visually revert if snapshot is missing.
+    }
   };
 
   return (
@@ -1068,14 +1103,11 @@ export default function ChessGame() {
           position={fen}
           onPieceDrop={(from, to) => {
             // Block interaction while second move is being processed
-            if (
-              isAwaitingSecondLcMove &&
-              lcSecondMoveResolver &&
-              lcFirstMoveDetails
-            ) {
-              return true;
+            if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
+               makeMove(from, to); 
+               return true; 
             }
-            return !!makeMove(from, to);
+            return !!makeMove(from, to); // For non-LC moves or first LC move
           }}
           boardWidth={500}
           boardOrientation={color === "black" ? "black" : "white"}
