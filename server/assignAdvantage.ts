@@ -23,10 +23,9 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  {
-    id: "knightmare",
-    name: "Knightmare",
-    description: "Each knight may make a double L-move once.",
+  { id: "queenly_compensation",
+    name: "Queenly Compensation",
+    description: "When your queen is captured, a knight is summoned onto her home square. If the square is occupied, the knight replaces the occupying piece.",
     rarity: "rare"
   },
   { 

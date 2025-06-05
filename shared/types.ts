@@ -44,6 +44,9 @@ export interface PlayerAdvantageStates {
     hasUsed: boolean;
   };
   knightmare?: { hasUsed: boolean };
+  queenly_compensation?: {
+    hasUsed: boolean;
+  };
   // Add other advantage states here as needed
 }
 

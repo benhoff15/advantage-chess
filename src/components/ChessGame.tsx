@@ -47,6 +47,7 @@ import {
   getKnightmareSquares,
   handleKnightmareClientMove,
 } from "../logic/advantages/knightmare";
+import { shouldShowQueenlyCompensationToast } from '../logic/advantages/queenlyCompensation';
 import { Move } from "chess.js";
 
 // Define the type for the chess.js Move object if not already available globally
@@ -103,6 +104,7 @@ const [isQueensDomainToggleActive, setIsQueensDomainToggleActive] = useState(fal
 const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | null>(null); // Knightmare state
 const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | null>(null);
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
+const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUsed: boolean } | null>(null);
 
   const {
     isSacrificialBlessingActive,
@@ -192,6 +194,12 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
         setKnightmarePossibleMoves([]);
       }
   }
+
+  if (myAdvantage?.id === "queenly_compensation") {
+    if (!queenlyCompensationState) setQueenlyCompensationState({ hasUsed: false });
+  } else {
+    if (queenlyCompensationState) setQueenlyCompensationState(null);
+  }
   }, [myAdvantage]); // Simplified dependencies, check if knightmareState itself is needed if its internal changes shouldn't re-run this specific block
 
   useEffect(() => {
@@ -267,6 +275,7 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
         return;
       }
 
+      console.log("[ChessGame handleReceiveMove] Comparing for echo: receivedMove.color=", receivedMove.color, "component color=", color);
       const isEcho = receivedMove.color === color;
 
       if (isEcho && receivedMove.color === color) { 
@@ -334,6 +343,12 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
                  alert("Queen's Domain used!"); 
             }
         }
+
+        if (receivedMove.updatedAdvantageStates?.queenly_compensation && myAdvantage?.id === 'queenly_compensation') {
+          setQueenlyCompensationState(receivedMove.updatedAdvantageStates.queenly_compensation);
+          console.log("[ChessGame handleReceiveMove ECHO] Queenly Compensation state updated from server echo:", receivedMove.updatedAdvantageStates.queenly_compensation);
+        }
+
         if (receivedMove.special === "lightning_capture") {
           setLightningCaptureState({ used: true });
           setIsLightningCaptureActive(false); 
@@ -487,6 +502,30 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
             console.log(`[KM DEBUG ChessGame] handleReceiveMove: Opponent's Knightmare move received. From: ${receivedMove.from}, To: ${receivedMove.to}. Board update via afterFen: ${receivedMove.afterFen}.`);
         }
       }
+
+      // Queenly Compensation Toast Notifications (after FEN has been updated)
+      if (color) { // Ensure color is not null
+        if (shouldShowQueenlyCompensationToast({ move: receivedMove, myColor: color, myAdvantageId: myAdvantage?.id })) {
+          alert("♘ Queenly Compensation: A knight rises where your queen fell.");
+          // Update local state based on server echo if this was our move, or if server sent it for opponent's move that affected us.
+          if (receivedMove.updatedAdvantageStates?.queenly_compensation) {
+            setQueenlyCompensationState(receivedMove.updatedAdvantageStates.queenly_compensation);
+            console.log("[ChessGame QC Toast] QC state updated from receivedMove.updatedAdvantageStates:", receivedMove.updatedAdvantageStates.queenly_compensation);
+          } else if (isEcho) { // If it's an echo of our move triggering QC, but somehow state wasn't in payload.
+            setQueenlyCompensationState({ hasUsed: true });
+            console.log("[ChessGame QC Toast] QC state updated (fallback to hasUsed:true) due to echo.");
+          }
+        } else {
+          // Generic toast for the opponent
+          const playerWhoseQueenWasCompensated = receivedMove.color === 'white' ? 'black' : 'white';
+          if (receivedMove.specialServerEffect === 'queenly_compensation_triggered' && playerWhoseQueenWasCompensated !== color) {
+              const homeSquare = playerWhoseQueenWasCompensated === 'white' ? 'd1' : 'd8';
+              alert(`Opponent's Queenly Compensation triggered: A knight appeared on ${homeSquare}.`);
+              // If the server sends the opponent's QC state, we could theoretically store it,
+              // but it's not typically needed for the current player's UI beyond this notification.
+          }
+        }
+      }
     };
     socket.on("receiveMove", handleReceiveMove);
 
@@ -517,6 +556,9 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
       if (data.advantage.id === 'queens_domain') {
         setQueensDomainState(prevState => prevState || { isActive: false, hasUsed: false }); 
         setIsQueensDomainToggleActive(false); 
+      } else if (data.advantage.id === 'queenly_compensation') {
+        setQueenlyCompensationState({ hasUsed: false });
+        console.log("[ChessGame handleAdvantageAssigned] Queenly Compensation advantage assigned, state initialized.");
       }
     };
     socket.on("advantageAssigned", handleAdvantageAssigned);

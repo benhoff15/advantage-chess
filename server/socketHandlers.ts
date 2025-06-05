@@ -2,6 +2,7 @@ import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
 import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState } from "../shared/types";
+import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -77,6 +78,8 @@ export type RoomState = {
   blackQueensDomainState?: { isActive: boolean; hasUsed: boolean };
   whiteKnightmareState?: { hasUsed: boolean };
   blackKnightmareState?: { hasUsed: boolean };
+  whiteQueenlyCompensationState?: { hasUsed: boolean };
+  blackQueenlyCompensationState?: { hasUsed: boolean };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -157,9 +160,11 @@ export function setupSocketHandlers(io: Server) {
           blackQueensDomainState: { isActive: false, hasUsed: false },
           whiteKnightmareState: { hasUsed: false }, // Initialize with hasUsed: false
           blackKnightmareState: { hasUsed: false }, // Initialize with hasUsed: false
+          whiteQueenlyCompensationState: { hasUsed: false },
+          blackQueenlyCompensationState: { hasUsed: false },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare ({hasUsed: false}).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare and Queenly Compensation ({hasUsed: false}).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -186,6 +191,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackQueensDomainState === undefined) room.blackQueensDomainState = { isActive: false, hasUsed: false };
         if (room.whiteAdvantage?.id === "knightmare" && (!room.whiteKnightmareState || typeof room.whiteKnightmareState.hasUsed === 'undefined')) room.whiteKnightmareState = { hasUsed: false };
         if (room.blackAdvantage?.id === "knightmare" && (!room.blackKnightmareState || typeof room.blackKnightmareState.hasUsed === 'undefined')) room.blackKnightmareState = { hasUsed: false };
+        if (room.whiteAdvantage?.id === "queenly_compensation" && (!room.whiteQueenlyCompensationState || typeof room.whiteQueenlyCompensationState.hasUsed === 'undefined')) room.whiteQueenlyCompensationState = { hasUsed: false };
+        if (room.blackAdvantage?.id === "queenly_compensation" && (!room.blackQueenlyCompensationState || typeof room.blackQueenlyCompensationState.hasUsed === 'undefined')) room.blackQueenlyCompensationState = { hasUsed: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -253,6 +260,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
+            } else if (room.whiteAdvantage.id === "queenly_compensation") {
+                room.whiteQueenlyCompensationState = { hasUsed: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -297,6 +308,10 @@ export function setupSocketHandlers(io: Server) {
                 room.blackKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Knightmare, state initialized: ${JSON.stringify(room.blackKnightmareState)}`);
+            } else if (room.blackAdvantage.id === "queenly_compensation") {
+                room.blackQueenlyCompensationState = { hasUsed: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Queenly Compensation, state initialized.`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -967,45 +982,119 @@ export function setupSocketHandlers(io: Server) {
             }
             // ---- End Queen's Domain State Update ----
 
+            // ---- Queenly Compensation Main Logic ----
+            let qcTriggeredThisTurn = false;
+            if (moveResult && moveResult.captured === 'q' && room.fen) { // Check if a queen was captured
+              const playerWithAdvantageColor = moveResult.color === 'w' ? 'b' : 'w'; // The one whose queen was captured
+              let qcAdvantagePlayerSocketId: string | undefined;
+              let qcAdvantagePlayerCurrentState: { hasUsed: boolean } | undefined;
+              let qcPlayerAdvantageType: 'white' | 'black' | undefined;
+
+              if (playerWithAdvantageColor === 'w' && room.whiteAdvantage?.id === 'queenly_compensation' && room.whiteQueenlyCompensationState) {
+                qcAdvantagePlayerSocketId = room.white;
+                qcAdvantagePlayerCurrentState = room.whiteQueenlyCompensationState;
+                qcPlayerAdvantageType = 'white';
+              } else if (playerWithAdvantageColor === 'b' && room.blackAdvantage?.id === 'queenly_compensation' && room.blackQueenlyCompensationState) {
+                qcAdvantagePlayerSocketId = room.black;
+                qcAdvantagePlayerCurrentState = room.blackQueenlyCompensationState;
+                qcPlayerAdvantageType = 'black';
+              }
+
+              if (qcAdvantagePlayerSocketId && qcAdvantagePlayerCurrentState && qcPlayerAdvantageType && !qcAdvantagePlayerCurrentState.hasUsed) {
+                console.log(`[QueenlyCompensation Trigger] Checking for ${qcPlayerAdvantageType} player (${qcAdvantagePlayerSocketId})`);
+                
+                const playerSpecificAdvantageStates: PlayerAdvantageStates = {};
+                if (qcPlayerAdvantageType === 'white') {
+                    playerSpecificAdvantageStates.queenly_compensation = room.whiteQueenlyCompensationState;
+                } else {
+                    playerSpecificAdvantageStates.queenly_compensation = room.blackQueenlyCompensationState;
+                }
+
+                const qcGame = new Chess(room.fen); // Use the latest FEN before QC effect
+                const qcResult = handleQueenlyCompensation({
+                  game: qcGame,
+                  move: moveResult, 
+                  playerColor: playerWithAdvantageColor,
+                  advantageStates: playerSpecificAdvantageStates,
+                });
+
+                if (qcResult.used && qcResult.newFen && qcResult.updatedAdvantageStates?.queenly_compensation) {
+                  console.log(`[QueenlyCompensation Trigger] Advantage used by ${qcPlayerAdvantageType}. New FEN: ${qcResult.newFen}`);
+                  room.fen = qcResult.newFen; 
+                  serverGame.load(qcResult.newFen); 
+
+                  if (qcPlayerAdvantageType === 'white') {
+                    room.whiteQueenlyCompensationState = qcResult.updatedAdvantageStates.queenly_compensation;
+                  } else {
+                    room.blackQueenlyCompensationState = qcResult.updatedAdvantageStates.queenly_compensation;
+                  }
+                  qcTriggeredThisTurn = true;
+                }
+              }
+            }
+            // ---- End Queenly Compensation Main Logic ----
+            
             console.log(`[sendMove] Move by ${senderColor} validated (not deflected). Final FEN for room ${roomId}: ${room.fen}`);
             
-            let moveDataForBroadcast: ServerMovePayload = { // Changed to let
+            let moveDataForBroadcast: ServerMovePayload = { 
                 ...clientMoveData, 
                 color: senderColor!,
                 ...(ambushAppliedThisTurn && { wasPawnAmbush: true }) 
+                // afterFen will be set below
             };
 
-            // Add updated advantage states if applicable (specifically for Knightmare here)
+            // Set the definitive FEN for the client AFTER all server-side effects (like QC) are applied
+            moveDataForBroadcast.afterFen = room.fen;
+            console.log(`[SocketHandlers sendMove] Setting final afterFen for broadcast: ${room.fen}`);
+
+            // ---- Add effects to broadcast ----
+
+            // Queenly Compensation broadcast effects
+            if (qcTriggeredThisTurn) {
+                const playerWhoseQueenWasCapturedColor = moveResult.color === 'w' ? 'b' : 'w'; // moveResult is safe to use here
+                let qcStateForBroadcast: { hasUsed: boolean } | undefined;
+                if (playerWhoseQueenWasCapturedColor === 'w' && room.whiteAdvantage?.id === 'queenly_compensation') {
+                    qcStateForBroadcast = room.whiteQueenlyCompensationState;
+                } else if (playerWhoseQueenWasCapturedColor === 'b' && room.blackAdvantage?.id === 'queenly_compensation') {
+                    qcStateForBroadcast = room.blackQueenlyCompensationState;
+                }
+
+                if (qcStateForBroadcast?.hasUsed) { 
+                    console.log(`[QueenlyCompensation Trigger] Adding QC effects to broadcast. FEN: ${room.fen}`);
+                    moveDataForBroadcast.specialServerEffect = 'queenly_compensation_triggered';
+                    moveDataForBroadcast.updatedAdvantageStates = {
+                        ...moveDataForBroadcast.updatedAdvantageStates,
+                        queenly_compensation: qcStateForBroadcast,
+                    };
+                }
+            }
+
+            // Knightmare broadcast effects
             if (receivedMove.special === 'knightmare' && senderColor) {
                 const playerKnightmareState = senderColor === 'white' ? room.whiteKnightmareState : room.blackKnightmareState;
                 if (playerKnightmareState) {
                     const advStatesUpdate: Partial<PlayerAdvantageStates> = {
-                        knightmare: playerKnightmareState // This is already the kmResult.advantageStateUpdated
+                        knightmare: playerKnightmareState 
                     };
-                    moveDataForBroadcast.updatedAdvantageStates = advStatesUpdate;
-                    console.log(`[sendMove] Knightmare by ${senderColor}: Attaching updatedAdvantageStates to broadcast: ${JSON.stringify(advStatesUpdate)}`);
+                    moveDataForBroadcast.updatedAdvantageStates = {
+                        ...moveDataForBroadcast.updatedAdvantageStates, // Preserve QC state if set
+                        ...advStatesUpdate
+                    };
+                    console.log(`[sendMove] Knightmare by ${senderColor}: Attaching updatedAdvantageStates to broadcast: ${JSON.stringify(moveDataForBroadcast.updatedAdvantageStates)}`);
                 }
             }
-
-            // Add afterFen to broadcast
-            if (moveResult.after) { // Ensure moveResult.after exists (it's part of the Move type)
-              moveDataForBroadcast.afterFen = moveResult.after; // Corrected line
-              console.log(`[SocketHandlers sendMove] Added afterFen to broadcast: ${moveResult.after}`);
-            } else {
-              // This case should ideally not happen for successfully validated moves from chess.js or well-constructed manual moves
-              console.warn(`[SocketHandlers sendMove] moveResult.after was undefined for a successful move. FEN might not sync perfectly on client for this move. moveResult: ${JSON.stringify(moveResult)}`);
-              moveDataForBroadcast.afterFen = serverGame.fen(); // Corrected line
-            }
-
-            // Add specialServerEffect for QD if it was used
-            // This check uses the state which would have been updated inside the `if (moveResult && room.fen === serverGame.fen())` block for committed moves.
+            
+            // Queen's Domain consumed broadcast effect
+            // Note: playerAdvantageForQD was defined much earlier in sendMove.
+            // Ensure it's still in scope or redefine if necessary. For this diff, assuming it's available.
             const currentSenderQueensDomainState = senderColor === 'white' ? room.whiteQueensDomainState : room.blackQueensDomainState;
             if (playerAdvantageForQD?.id === 'queens_domain' && 
                 clientMoveData.special === 'queens_domain_move' && 
-                currentSenderQueensDomainState?.hasUsed === true) { // Explicitly check hasUsed is true
+                currentSenderQueensDomainState?.hasUsed === true) {
                 moveDataForBroadcast.specialServerEffect = 'queens_domain_consumed';
             }
             
+            // Ambush promotion details for broadcast
             if (moveResult.promotion && ambushAppliedThisTurn) {
                 console.warn("[sendMove] Conflict: Standard promotion and Pawn Ambush on same move? This shouldn't happen if ranks are different.");
                 moveDataForBroadcast.wasPawnAmbush = false; 
@@ -1013,7 +1102,7 @@ export function setupSocketHandlers(io: Server) {
             } else if (ambushAppliedThisTurn) {
                 moveDataForBroadcast.promotion = 'q'; // Explicitly state queen promotion due to ambush
             }
-
+            // --- End Add effects to broadcast ---
 
             const payload = {
                 move: moveDataForBroadcast,
