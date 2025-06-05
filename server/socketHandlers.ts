@@ -1,7 +1,8 @@
 import { Server, Socket } from "socket.io";
-import { Chess, Move } from "chess.js"; // Import Chess and Move
+import { Chess, Move, Square } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
 import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState } from "../shared/types";
+import { applyArcaneReinforcement } from "./logic/advantages/arcaneReinforcement";
 import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
@@ -80,6 +81,8 @@ export type RoomState = {
   blackKnightmareState?: { hasUsed: boolean };
   whiteQueenlyCompensationState?: { hasUsed: boolean };
   blackQueenlyCompensationState?: { hasUsed: boolean };
+  whiteArcaneReinforcementSpawnedSquare?: Square | null;
+  blackArcaneReinforcementSpawnedSquare?: Square | null;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -162,9 +165,11 @@ export function setupSocketHandlers(io: Server) {
           blackKnightmareState: { hasUsed: false }, // Initialize with hasUsed: false
           whiteQueenlyCompensationState: { hasUsed: false },
           blackQueenlyCompensationState: { hasUsed: false },
+          whiteArcaneReinforcementSpawnedSquare: null,
+          blackArcaneReinforcementSpawnedSquare: null,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare and Queenly Compensation ({hasUsed: false}).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), and Arcane Reinforcement (null).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -193,6 +198,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackAdvantage?.id === "knightmare" && (!room.blackKnightmareState || typeof room.blackKnightmareState.hasUsed === 'undefined')) room.blackKnightmareState = { hasUsed: false };
         if (room.whiteAdvantage?.id === "queenly_compensation" && (!room.whiteQueenlyCompensationState || typeof room.whiteQueenlyCompensationState.hasUsed === 'undefined')) room.whiteQueenlyCompensationState = { hasUsed: false };
         if (room.blackAdvantage?.id === "queenly_compensation" && (!room.blackQueenlyCompensationState || typeof room.blackQueenlyCompensationState.hasUsed === 'undefined')) room.blackQueenlyCompensationState = { hasUsed: false };
+        if (room.whiteArcaneReinforcementSpawnedSquare === undefined) room.whiteArcaneReinforcementSpawnedSquare = null;
+        if (room.blackArcaneReinforcementSpawnedSquare === undefined) room.blackArcaneReinforcementSpawnedSquare = null;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -218,10 +225,40 @@ export function setupSocketHandlers(io: Server) {
         
         // ---- START NEW LOGIC BLOCK ----
         // This block runs when the second player (black) has just joined.
-        const initialGame = new Chess(); 
+        const initialGame = new Chess(); // Board is in starting position here
 
-        // White player's advantage processing
-        // White player's advantage processing
+        // Apply Arcane Reinforcement for White if applicable
+        // This needs to happen BEFORE other advantages that might rely on specific piece setups
+        // or before the initial FEN is finalized for the game start.
+        if (room.whiteAdvantage?.id === 'arcane_reinforcement' && room.white) {
+            const result = applyArcaneReinforcement(initialGame, 'w');
+            if (result.spawnedSquare) {
+                room.whiteArcaneReinforcementSpawnedSquare = result.spawnedSquare;
+                console.log(`[SocketHandlers] Arcane Reinforcement applied for white. Bishop at ${result.spawnedSquare}. New FEN preview: ${initialGame.fen()}`);
+            } else {
+                console.log(`[SocketHandlers] Arcane Reinforcement for white: No square found or failed to place.`);
+            }
+        }
+
+        // Apply Arcane Reinforcement for Black if applicable
+        if (room.blackAdvantage?.id === 'arcane_reinforcement' && room.black) {
+            // Note: room.black is socket.id at this point in the code if black is just joining
+            const result = applyArcaneReinforcement(initialGame, 'b');
+            if (result.spawnedSquare) {
+                room.blackArcaneReinforcementSpawnedSquare = result.spawnedSquare;
+                console.log(`[SocketHandlers] Arcane Reinforcement applied for black. Bishop at ${result.spawnedSquare}. New FEN preview: ${initialGame.fen()}`);
+            } else {
+                console.log(`[SocketHandlers] Arcane Reinforcement for black: No square found or failed to place.`);
+            }
+        }
+        
+        // Now that Arcane Reinforcement (and any other pre-game board modifiers) are applied,
+        // set the definitive starting FEN for the room.
+        room.fen = initialGame.fen();
+        console.log(`[joinRoom] Definitive starting FEN for room ${roomId} after all pre-game advantages: ${room.fen}`);
+
+
+        // White player's advantage processing & emitting advantageAssigned
         if (room.whiteAdvantage && room.white) {
             if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
                 const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
@@ -264,12 +301,21 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteQueenlyCompensationState = { hasUsed: false };
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
+            } else if (room.whiteAdvantage.id === "arcane_reinforcement") {
+                const whitePayload = {
+                    advantage: room.whiteAdvantage,
+                    advantageDetails: { spawnedSquare: room.whiteArcaneReinforcementSpawnedSquare }
+                };
+                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to white. Payload:', JSON.stringify(whitePayload));
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", whitePayload);
+                console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
         }
 
         // Black player's advantage processing (socket is black's socket here)
+        // The applyArcaneReinforcement logic for black has already run above and set room.blackArcaneReinforcementSpawnedSquare
         if (room.blackAdvantage) {
             if (room.blackAdvantage.id === "silent_shield" && room.silentShieldPieces) {
                 const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
@@ -312,13 +358,26 @@ export function setupSocketHandlers(io: Server) {
                 room.blackQueenlyCompensationState = { hasUsed: false };
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Queenly Compensation, state initialized.`);
+            } else if (room.blackAdvantage.id === "arcane_reinforcement") {
+                const blackPayload = {
+                    advantage: room.blackAdvantage,
+                    advantageDetails: { spawnedSquare: room.blackArcaneReinforcementSpawnedSquare }
+                };
+                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to black. Payload:', JSON.stringify(blackPayload));
+                socket.emit("advantageAssigned", blackPayload);
+                console.log(`Black player (${socket.id}) assigned Arcane Reinforcement. Spawned at: ${room.blackArcaneReinforcementSpawnedSquare}`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
         }
         // ---- END Advantage Assignment and State Init ----
+        
+        // After all advantages are processed and initial FEN is set (including Arcane Reinforcement pieces):
+        io.to(roomId).emit("gameStart", { fen: room.fen, whitePlayer: room.white, blackPlayer: room.black });
+        io.to(roomId).emit("opponentJoined"); // This might be redundant if gameStart implies opponent is there.
+                                            // Or, it could be useful for client-side logic that specifically waits for this.
+                                            // Keeping it for now as per existing structure.
 
-        io.to(roomId).emit("opponentJoined");
       } else {
         socket.emit("roomFull");
         console.log(`Room ${roomId} is full`);

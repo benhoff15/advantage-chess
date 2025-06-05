@@ -105,6 +105,7 @@ const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | nu
 const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | null>(null);
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
 const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUsed: boolean } | null>(null);
+const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = useState<string | null>(null);
 
   const {
     isSacrificialBlessingActive,
@@ -200,7 +201,14 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
   } else {
     if (queenlyCompensationState) setQueenlyCompensationState(null);
   }
-  }, [myAdvantage]); // Simplified dependencies, check if knightmareState itself is needed if its internal changes shouldn't re-run this specific block
+
+  if (myAdvantage?.id !== "arcane_reinforcement") {
+    if (arcaneReinforcementSpawnedSquare) setArcaneReinforcementSpawnedSquare(null);
+  }
+  // Note: Arcane Reinforcement's spawnedSquare is set via handleAdvantageAssigned,
+  // and doesn't need direct initialization here beyond resetting if the advantage changes.
+
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // Added arcaneReinforcementSpawnedSquare dependency
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -247,6 +255,20 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
       alert("Your opponent has disconnected.");
     };
     socket.on("opponentDisconnected", handleOpponentDisconnected);
+
+    const handleGameStart = (data: { fen: string }) => {
+      console.log("[ChessGame event] gameStart. Loading FEN:", data.fen);
+      try {
+        game.load(data.fen);
+        setFen(game.fen());
+        fenSnapshotBeforeMove.current = game.fen(); // Initialize snapshot with starting FEN
+      } catch (e) {
+        console.error("[ChessGame event gameStart] Error loading FEN from gameStart event:", e, "FEN was:", data.fen);
+        // Optionally request a FEN sync if loading fails, though this should be rare for gameStart
+        socket.emit("requestFenSync", { roomId });
+      }
+    };
+    socket.on("gameStart", handleGameStart);
     
     type ReceiveMoveEventData = {
       move: ServerMovePayload; 
@@ -542,9 +564,13 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
     const handleAdvantageAssigned = (data: {
       advantage: Advantage;
       shieldedPiece?: ShieldedPieceInfo;
+      advantageDetails?: any; // To accommodate various advantage details
     }) => {
-      console.log("[ChessGame event] advantageAssigned:", data);
+      console.log('[Arcane Reinforcement Debug Client] Received advantageAssigned event. Data:', JSON.stringify(data));
+      console.log("[ChessGame event] advantageAssigned:", data); // Existing log, can be kept or removed
       setMyAdvantage(data.advantage);
+      setArcaneReinforcementSpawnedSquare(null); // Clear previous AR state
+
       if (data.shieldedPiece) {
         setMyShieldedPieceInfo(data.shieldedPiece);
         if (data.advantage.id === "silent_shield") {
@@ -559,6 +585,25 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
       } else if (data.advantage.id === 'queenly_compensation') {
         setQueenlyCompensationState({ hasUsed: false });
         console.log("[ChessGame handleAdvantageAssigned] Queenly Compensation advantage assigned, state initialized.");
+      } else if (data.advantage.id === 'arcane_reinforcement') {
+        if (data.advantageDetails && typeof data.advantageDetails.spawnedSquare === 'string' && data.advantageDetails.spawnedSquare.length > 0) {
+          // Square is a non-empty string, so a bishop was spawned
+          setArcaneReinforcementSpawnedSquare(data.advantageDetails.spawnedSquare);
+          alert("🧙 Arcane Reinforcement: You begin with an extra bishop!");
+          console.log(`[ChessGame] Arcane Reinforcement: Bishop spawned at ${data.advantageDetails.spawnedSquare}`);
+        } else if (data.advantageDetails && data.advantageDetails.spawnedSquare === null) {
+          // Server explicitly said no square was available (spawnedSquare is null)
+          setArcaneReinforcementSpawnedSquare(null);
+          alert("🧙 Arcane Reinforcement: No empty squares available to place the extra bishop.");
+          console.log('[ChessGame] Arcane Reinforcement: Skipped by server, no empty squares were available.');
+        } else {
+          // spawnedSquare is missing entirely, undefined, or an empty string (which shouldn't happen for a valid square).
+          // This path indicates an unexpected issue in data or transmission if advantageDetails itself is present.
+          setArcaneReinforcementSpawnedSquare(null);
+          // Alert the user that the advantage is active but there's an issue with the spawn location.
+          alert("🧙 Arcane Reinforcement is active, but its effect might not apply correctly due to missing spawn details.");
+          console.log('[ChessGame] Arcane Reinforcement active, but spawnedSquare was missing, undefined, or invalid in advantageDetails.');
+        }
       }
     };
     socket.on("advantageAssigned", handleAdvantageAssigned);
@@ -707,6 +752,7 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
       socket.off("colorAssigned", handleColorAssigned);
       socket.off("opponentJoined", handleOpponentJoined);
       socket.off("opponentDisconnected", handleOpponentDisconnected);
+      socket.off("gameStart", handleGameStart);
       socket.off("receiveMove", handleReceiveMove);
       socket.off("revealAdvantages", handleRevealAdvantages);
       socket.off("advantageAssigned", handleAdvantageAssigned);
@@ -1796,11 +1842,19 @@ const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUs
                knightmarePossibleMoves.forEach(sq => {
                    styles[sq] = { 
                      ...styles[sq], 
-                     background: "rgba(240, 230, 140, 0.5)", 
+                  background: "rgba(240, 230, 140, 0.5)", // Existing Knightmare highlight
                      cursor: "pointer", 
                    };
                });
+            } else if (arcaneReinforcementSpawnedSquare && myAdvantage?.id === 'arcane_reinforcement') {
+              // Highlight for Arcane Reinforcement if the square is set
+              // No need to check color here as it's only set for the current player's advantage
+              styles[arcaneReinforcementSpawnedSquare] = {
+                ...styles[arcaneReinforcementSpawnedSquare], // Preserve other styles like Knightmare selection
+                background: "rgba(100, 200, 100, 0.4)", // A green highlight
+              };
             }
+
 
             if (myAdvantage?.id === "queens_domain" && isQueensDomainToggleActive && queensDomainState && !queensDomainState.hasUsed && color && game.turn() === color[0]) {
               const playerQueenSquares: Square[] = [];

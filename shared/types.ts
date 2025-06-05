@@ -47,6 +47,9 @@ export interface PlayerAdvantageStates {
   queenly_compensation?: {
     hasUsed: boolean;
   };
+  arcane_reinforcement?: {
+    spawnedSquare?: string; // e.g., 'e2', 'f7'
+  };
   // Add other advantage states here as needed
 }
 
