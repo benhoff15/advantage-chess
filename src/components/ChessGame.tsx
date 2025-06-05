@@ -212,7 +212,51 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
       let moveSuccessfullyApplied = false;
       const currentFenBeforeOpponentMove = game.fen();
 
-      if (receivedMove.special === "lightning_capture") {
+      // Pawn Ambush - Opponent's move
+      if (receivedMove.color !== color && receivedMove.wasPawnAmbush) {
+        console.log(`[ChessGame handleReceiveMove] Opponent's move is Pawn Ambush. Current FEN: ${game.fen()}`);
+        // Perform the initial pawn move to ensure it's on the target square and any capture is processed
+        const initialPawnMove = game.move({ from: receivedMove.from, to: receivedMove.to });
+        if (initialPawnMove) {
+          console.log(`[ChessGame handleReceiveMove] Pawn Ambush: Initial pawn move applied. FEN after initial move: ${game.fen()}`);
+          
+          // Remove the pawn from the 'to' square
+          const removedPiece = game.remove(receivedMove.to as Square);
+          if (!removedPiece) {
+            console.error(`[ChessGame handleReceiveMove] Pawn Ambush: Failed to remove pawn from ${receivedMove.to}. Current FEN: ${game.fen()}`);
+            // Consider FEN sync or error handling
+            socket.emit("requestFenSync", { roomId });
+            moveSuccessfullyApplied = false;
+          } else {
+            console.log(`[ChessGame handleReceiveMove] Pawn Ambush: Pawn removed from ${receivedMove.to}. Piece was: ${removedPiece.type}`);
+            
+            // Put a queen of the correct color onto the 'to' square
+            const queenPlaced = game.put(
+              { type: 'q', color: receivedMove.color![0] as 'w' | 'b' },
+              receivedMove.to as Square
+            );
+            if (!queenPlaced) {
+              console.error(`[ChessGame handleReceiveMove] Pawn Ambush: Failed to place queen on ${receivedMove.to}. Attempting to revert remove. Current FEN: ${game.fen()}`);
+              // Attempt to revert the removal if queen placement fails
+              game.put({type: removedPiece.type, color: removedPiece.color}, receivedMove.to as Square);
+              socket.emit("requestFenSync", { roomId });
+              moveSuccessfullyApplied = false;
+            } else {
+              console.log(`[ChessGame handleReceiveMove] Pawn Ambush: Queen placed on ${receivedMove.to}. FEN after manual promotion: ${game.fen()}`);
+              setFen(game.fen());
+              moveSuccessfullyApplied = true;
+              console.log("[ChessGame handleReceiveMove] Pawn Ambush successfully applied by opponent.");
+            }
+          }
+        } else {
+          console.error(
+            `[ChessGame handleReceiveMove] Pawn Ambush: Initial pawn move FAILED. Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}`
+          );
+          // Request FEN sync as the initial move itself failed, which is unexpected for a validated ambush
+          socket.emit("requestFenSync", { roomId });
+          moveSuccessfullyApplied = false;
+        }
+      } else if (receivedMove.special === "lightning_capture") {
         console.log(
           "[ChessGame handleReceiveMove] Opponent's move is Lightning Capture.",
         );
@@ -388,11 +432,38 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
           setGameOverMessage("Draw by Insufficient Material");
         }
         // Add Pawn Ambush check for opponent's move
-        if (receivedMove.color !== color) { // Ensure it's opponent's move before this specific log/check
+        // The existing applyPawnAmbushOpponentMove call here might become redundant for board updates
+        // if the new block above handles it. It could be kept for logging or specific UI cues if needed.
+        // For now, if wasPawnAmbush is true, it's handled above. If not, this will proceed.
+        // However, if the move was already handled by the new `wasPawnAmbush` block,
+        // `moveSuccessfullyApplied` will be true, and this block might not need to run
+        // or its effects might be benign if `applyPawnAmbushOpponentMove` is idempotent or just logs.
+
+        // Let's ensure this part is only for logging if the new block didn't run, or if it's a different kind of ambush.
+        // Given the new logic specifically checks for `wasPawnAmbush`, this existing call to
+        // `applyPawnAmbushOpponentMove` might be intended for a different scenario or can be removed/refactored.
+        // For now, let's assume `wasPawnAmbush` is the definitive flag from the server for this specific flow.
+        // The `applyPawnAmbushOpponentMove` might have other logic (like UI cues) not covered by the direct board manipulation.
+        // If `moveSuccessfullyApplied` is true from the new Pawn Ambush block, this part of the code
+        // will still run but the `game` state should already be correct.
+        // The original instruction mentioned: "Consider the interaction with applyPawnAmbushOpponentMove.
+        // This function might become redundant for board updates but can be kept for logging or specific UI cues if needed."
+
+        // If the move was NOT a `wasPawnAmbush` true scenario, but some other logic might trigger `applyPawnAmbushOpponentMove`
+        // (e.g. if it's not just for the "pawn becomes queen" type of ambush), then it should remain.
+        // Based on the subtask, the primary goal is the new block.
+        // We can refine this later if `applyPawnAmbushOpponentMove` has other distinct roles.
+        // For now, let's assume the new block is the primary handler for wasPawnAmbush=true.
+        // The log inside `applyPawnAmbushOpponentMove` might still be useful.
+        if (receivedMove.color !== color && !receivedMove.wasPawnAmbush) { 
+            // Only call this if it's an opponent's move AND not the wasPawnAmbush case handled above.
+            // This preserves `applyPawnAmbushOpponentMove` for other potential (non-queen-promotion) ambush types if any.
             const ambushCheckResult = applyPawnAmbushOpponentMove({ game, receivedMove });
             if (ambushCheckResult.ambushRecognized) {
-                // Log already happens in applyPawnAmbushOpponentMove.
-                console.log("[ChessGame handleReceiveMove] Opponent's Pawn Ambush recognized.");
+                console.log("[ChessGame handleReceiveMove] Opponent's Pawn Ambush (non-transforming or other type) recognized by legacy function.");
+                // If this function modified the board and `moveSuccessfullyApplied` was false,
+                // it might need to set `moveSuccessfullyApplied = true` if `ambushCheckResult.boardUpdated` or similar.
+                // However, the new block is more specific about the board update.
             }
         }
       } else {
