@@ -17,6 +17,7 @@ import {
 import { selectProtectedPiece } from "./logic/advantages/silentShield";
 import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
 import { validateLightningCaptureServerMove } from './logic/advantages/lightningCapture';
+import { validateQueensDomainServerMove } from './logic/advantages/queensDomain'; // QD Import
 import { LightningCaptureState, PawnAmbushState } from "../shared/types"; // Added PawnAmbushState
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
@@ -71,6 +72,8 @@ export type RoomState = {
   blackHasUsedSacrificialBlessing?: boolean;
   restlessKingCheckBlock?: { white: boolean; black: boolean };
   restlessKingUsesLeft?: { white: number; black: number };
+  whiteQueensDomainState?: { isActive: boolean; hasUsed: boolean };
+  blackQueensDomainState?: { isActive: boolean; hasUsed: boolean };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -147,9 +150,11 @@ export function setupSocketHandlers(io: Server) {
           blackHasUsedSacrificialBlessing: false,
           restlessKingCheckBlock: { white: false, black: false },
           restlessKingUsesLeft: { white: 3, black: 3 },
+          whiteQueensDomainState: { isActive: false, hasUsed: false },
+          blackQueensDomainState: { isActive: false, hasUsed: false },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Queen's Domain.`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -172,6 +177,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackHasUsedSacrificialBlessing === undefined) room.blackHasUsedSacrificialBlessing = false;
         if (room.restlessKingCheckBlock === undefined) room.restlessKingCheckBlock = { white: false, black: false };
         if (room.restlessKingUsesLeft === undefined) room.restlessKingUsesLeft = { white: 3, black: 3 };
+        if (room.whiteQueensDomainState === undefined) room.whiteQueensDomainState = { isActive: false, hasUsed: false };
+        if (room.blackQueensDomainState === undefined) room.blackQueensDomainState = { isActive: false, hasUsed: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -231,6 +238,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteHasUsedRoyalDecree = false;
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
+            } else if (room.whiteAdvantage.id === "queens_domain") {
+                room.whiteQueensDomainState = { isActive: false, hasUsed: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -267,6 +278,10 @@ export function setupSocketHandlers(io: Server) {
                 room.blackHasUsedRoyalDecree = false;
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Royal Decree, state initialized.`);
+            } else if (room.blackAdvantage.id === "queens_domain") {
+                room.blackQueensDomainState = { isActive: false, hasUsed: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Queen's Domain, state initialized.`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -283,6 +298,7 @@ export function setupSocketHandlers(io: Server) {
 
       socket.on("sendMove", ({ roomId, move: clientMoveData }) => {
         const room = rooms[roomId];
+        // Moved the initial log to after senderColor is defined.
         if (!room || !room.fen || !room.white || !room.black) {
           console.error(`[sendMove] Room ${roomId} not found, no FEN, or incomplete (white: ${room?.white}, black: ${room?.black}, fen: ${room?.fen})`);
           socket.emit("serverError", { message: "Room not found or incomplete." });
@@ -308,6 +324,8 @@ export function setupSocketHandlers(io: Server) {
           socket.emit("serverError", { message: "You are not a player in this room." });
           return;
         }
+        // Now senderColor is defined, so we can log it.
+        console.log(`[SocketHandlers sendMove] Received. Room: ${roomId}, Move: ${JSON.stringify(clientMoveData)}, PlayerColor: ${senderColor}`);
 
         if (serverGame.turn() !== senderColor[0]) {
           console.warn(`[sendMove] Not ${senderColor}'s turn in room ${roomId}. Server FEN: ${room.fen}, Server turn: ${serverGame.turn()}, Sender claims: ${senderColor[0]}`);
@@ -389,6 +407,7 @@ export function setupSocketHandlers(io: Server) {
         let currentPlayerRooksMoved_CB: CornerBlitzAdvantageRookState | undefined;
         let currentPlayerRoyalEscortState_RE: RoyalEscortState | undefined;
         let currentPlayerLightningCaptureState_LC: LightningCaptureState | undefined;
+        let playerQueensDomainState: { isActive: boolean; hasUsed: boolean } | undefined;
 
 
         if (senderColor === 'white') {
@@ -396,11 +415,13 @@ export function setupSocketHandlers(io: Server) {
             currentPlayerRooksMoved_CB = room.whiteRooksMoved;
             currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState;
             currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState;
+            playerQueensDomainState = room.whiteQueensDomainState;
         } else if (senderColor === 'black') {
             currentPlayerAdvantageState_FB = room.blackFocusedBishopState;
             currentPlayerRooksMoved_CB = room.blackRooksMoved;
             currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState;
             currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState;
+            playerQueensDomainState = room.blackQueensDomainState;
         }
         
         // Fallback initialization for states if they are somehow missing
@@ -409,11 +430,13 @@ export function setupSocketHandlers(io: Server) {
             if (room.whiteAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
             if (room.whiteAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState = { usedCount: 0 };
             if (room.whiteAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState = { used: false };
+            if (room.whiteAdvantage?.id === "queens_domain" && !playerQueensDomainState) playerQueensDomainState = room.whiteQueensDomainState = { isActive: false, hasUsed: false };
         } else if (senderColor === 'black') {
             if (room.blackAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.blackFocusedBishopState = { focusedBishopUsed: false };
             if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
             if (room.blackAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState = { usedCount: 0 };
             if (room.blackAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState = { used: false };
+            if (room.blackAdvantage?.id === "queens_domain" && !playerQueensDomainState) playerQueensDomainState = room.blackQueensDomainState = { isActive: false, hasUsed: false };
         }
 
         // ---- Start of Silent Shield Capture Prevention ----
@@ -552,6 +575,37 @@ export function setupSocketHandlers(io: Server) {
               move: clientMoveData 
             });
             // moveResult remains null
+          }
+        } else if (receivedMove.special === "queens_domain_move") {
+          console.log(`[SocketHandlers sendMove] Validating QD. Player: ${senderColor}. Current QD state from room: ${JSON.stringify(playerQueensDomainState)}. Special flag: ${clientMoveData.special}`);
+          const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+          if (!playerQueensDomainState || playerAdvantage?.id !== "queens_domain") {
+            socket.emit("invalidMove", { message: "Queen's Domain state not found or advantage mismatch.", move: clientMoveData });
+            return;
+          }
+          const validationGame = new Chess(originalFenBeforeAttempt!);
+          const qdResult = validateQueensDomainServerMove({
+            game: validationGame,
+            clientMoveData: receivedMove as any,
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
+            queensDomainState: playerQueensDomainState, // Pass the current state
+          });
+
+          moveResult = qdResult.moveResult;
+
+          if (moveResult && qdResult.nextFen) {
+            serverGame.load(qdResult.nextFen);
+            room.fen = qdResult.nextFen;
+            // State updates (hasUsed, isActive) will be handled in the post-move logic block
+            console.log(`[sendMove] Queen's Domain by ${senderColor} validated. New FEN: ${room.fen}.`);
+          } else {
+            console.warn(`[sendMove] Queen's Domain by ${senderColor} failed validation: ${qdResult.error}`);
+            socket.emit("invalidMove", {
+              message: qdResult.error || "Queen's Domain move invalid or illegal.",
+              move: clientMoveData
+            });
+            moveResult = null;
           }
         } else if (receivedMove.special === "royal_escort") {
           const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
@@ -825,6 +879,29 @@ export function setupSocketHandlers(io: Server) {
             }
             // ---- End of Silent Shield currentSquare update ----
 
+            // ---- Queen's Domain State Update Post-Successful-Move (and not deflected) ----
+            const playerAdvantageForQD = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+            // playerQueensDomainState was fetched and initialized if necessary earlier in sendMove
+            if (playerAdvantageForQD?.id === 'queens_domain' && playerQueensDomainState) {
+              if (clientMoveData.special === 'queens_domain_move' && !playerQueensDomainState.hasUsed && moveResult) { // Check moveResult again to be sure
+                console.log(`[SocketHandlers sendMove] Queen's Domain successfully used by ${senderColor}. Updating state.`);
+                playerQueensDomainState.hasUsed = true;
+                playerQueensDomainState.isActive = false;
+                // Update the room state directly (it's a reference)
+                if (senderColor === 'white') room.whiteQueensDomainState = playerQueensDomainState;
+                else room.blackQueensDomainState = playerQueensDomainState;
+                
+                // This flag will be added to moveDataForBroadcast later
+              } else if (playerQueensDomainState.isActive && !playerQueensDomainState.hasUsed) {
+                // QD was active, but this move was not a QD special move (e.g. client validation failed, or different piece moved)
+                console.log(`[SocketHandlers sendMove] Queen's Domain was active for ${senderColor} but not used for this move. Resetting isActive.`);
+                playerQueensDomainState.isActive = false;
+                if (senderColor === 'white') room.whiteQueensDomainState = playerQueensDomainState;
+                else room.blackQueensDomainState = playerQueensDomainState;
+              }
+            }
+            // ---- End Queen's Domain State Update ----
+
             console.log(`[sendMove] Move by ${senderColor} validated (not deflected). Final FEN for room ${roomId}: ${room.fen}`);
             
             const moveDataForBroadcast: ServerMovePayload = {
@@ -832,6 +909,25 @@ export function setupSocketHandlers(io: Server) {
                 color: senderColor!,
                 ...(ambushAppliedThisTurn && { wasPawnAmbush: true }) 
             };
+
+            // Add afterFen to broadcast
+            if (moveResult.after) { // Ensure moveResult.after exists (it's part of the Move type)
+              moveDataForBroadcast.afterFen = moveResult.after; // Corrected line
+              console.log(`[SocketHandlers sendMove] Added afterFen to broadcast: ${moveResult.after}`);
+            } else {
+              // This case should ideally not happen for successfully validated moves from chess.js or well-constructed manual moves
+              console.warn(`[SocketHandlers sendMove] moveResult.after was undefined for a successful move. FEN might not sync perfectly on client for this move. moveResult: ${JSON.stringify(moveResult)}`);
+              moveDataForBroadcast.afterFen = serverGame.fen(); // Corrected line
+            }
+
+            // Add specialServerEffect for QD if it was used
+            // This check uses the state which would have been updated inside the `if (moveResult && room.fen === serverGame.fen())` block for committed moves.
+            const currentSenderQueensDomainState = senderColor === 'white' ? room.whiteQueensDomainState : room.blackQueensDomainState;
+            if (playerAdvantageForQD?.id === 'queens_domain' && 
+                clientMoveData.special === 'queens_domain_move' && 
+                currentSenderQueensDomainState?.hasUsed === true) { // Explicitly check hasUsed is true
+                moveDataForBroadcast.specialServerEffect = 'queens_domain_consumed';
+            }
             
             if (moveResult.promotion && ambushAppliedThisTurn) {
                 console.warn("[sendMove] Conflict: Standard promotion and Pawn Ambush on same move? This shouldn't happen if ranks are different.");
@@ -891,6 +987,37 @@ export function setupSocketHandlers(io: Server) {
             // Standard turn update logic might be here or handled by FEN
             // room.turn = serverGame.turn() === 'w' ? 'white' : 'black'; // Example
             // io.to(roomId).emit("turnChange", { turn: room.turn, fen: room.fen }); // Example
+
+            // ---- Queen's Domain State Update Post-Move ----
+            const playerAdvantageForQD = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+            // Use playerQueensDomainState which was fetched earlier and initialized if necessary
+            if (playerAdvantageForQD?.id === 'queens_domain' && playerQueensDomainState) {
+              if (clientMoveData.special === 'queens_domain_move' && !playerQueensDomainState.hasUsed && moveResult) { // Check moveResult to ensure QD was successful
+                console.log(`[SocketHandlers] Queen's Domain used by ${senderColor} for move. Updating state.`);
+                playerQueensDomainState.hasUsed = true;
+                playerQueensDomainState.isActive = false;
+                // Add a flag to the broadcasted move so client knows QD was consumed this move
+                // This assumes moveDataForBroadcast is accessible here or modified on the payload object directly
+                // This needs to be integrated with where `moveDataForBroadcast` is defined and used in the `receiveMove` emission.
+                // For now, let's assume we modify `payload.move` before emitting.
+                // The `payload` is defined in the `else { // NOT deflected }` block.
+                // This logic should be *inside* that block, before `io.to(roomId).emit("receiveMove", payload);`
+              } else if (playerQueensDomainState.isActive && !playerQueensDomainState.hasUsed) {
+                // Queen's Domain was active, but this specific move was not a QD special move
+                console.log(`[SocketHandlers] Queen's Domain was active for ${senderColor} but not used for this move. Resetting isActive.`);
+                playerQueensDomainState.isActive = false;
+              }
+              // Update the room state (important if playerQueensDomainState was a copy, but it's a direct reference)
+              if (senderColor === 'white') room.whiteQueensDomainState = playerQueensDomainState;
+              else room.blackQueensDomainState = playerQueensDomainState;
+            }
+            // ---- End Queen's Domain State Update Post-Move ----
+            // This (the QD state update block) was moved to be inside the `if (moveResult && room.fen === serverGame.fen())` block,
+            // which is fine as it ensures the state is updated only for truly committed moves.
+            // The specialServerEffect addition needs to be before the payload emission,
+            // and after the QD state is updated.
+            // The current placement of specialServerEffect addition (just above) should be correct
+            // relative to the payload emission.
         }
 
       });
@@ -1151,5 +1278,60 @@ export function setupSocketHandlers(io: Server) {
         winnerColor: null
       });
     });
+
+    socket.on("setAdvantageActiveState", ({ roomId, advantageId, isActive }: { roomId: string; advantageId: string; isActive: boolean }) => {
+      console.log(`[SocketHandlers setAdvantageActiveState] Received. Room: ${roomId}, AdvID: ${advantageId}, isActive: ${isActive}, SocketID: ${socket.id}`);
+      const room = rooms[roomId];
+      if (!room) {
+        console.error(`[setAdvantageActiveState] Room ${roomId} not found.`);
+        socket.emit("serverError", { message: "Room not found." });
+        return;
+      }
+
+      const playerSocketId = socket.id;
+      let playerColor: 'white' | 'black' | null = null;
+      let playerQueensDomainState: { isActive: boolean; hasUsed: boolean } | undefined;
+
+      if (room.white === playerSocketId) {
+        playerColor = 'white';
+        playerQueensDomainState = room.whiteQueensDomainState;
+      } else if (room.black === playerSocketId) {
+        playerColor = 'black';
+        playerQueensDomainState = room.blackQueensDomainState;
+      } else {
+        console.error(`[setAdvantageActiveState] Player ${playerSocketId} not in room ${roomId}.`);
+        // Optionally emit an error back to the client
+        return;
+      }
+
+      if (advantageId === "queens_domain" && playerColor) {
+        if (playerQueensDomainState) {
+          if (!playerQueensDomainState.hasUsed) {
+            console.log(`[SocketHandlers setAdvantageActiveState] Player ${playerColor}. Current QD state: ${JSON.stringify(playerQueensDomainState)}. Setting isActive to: ${isActive}`);
+            playerQueensDomainState.isActive = isActive;
+            console.log(`[SocketHandlers setAdvantageActiveState] Player ${playerColor}. New QD state: ${JSON.stringify(playerQueensDomainState)}. Emitting advantageStateUpdated.`);
+            
+            // Confirm state change back to the activating client
+            // This payload should match what the client expects for its advantage states
+            const updatedPlayerAdvantageStates: Partial<PlayerAdvantageStates> = {
+              queens_domain: { ...playerQueensDomainState } // Send a copy
+            };
+            io.to(socket.id).emit("advantageStateUpdated", updatedPlayerAdvantageStates);
+
+          } else {
+            console.log(`[setAdvantageActiveState] Queen's Domain for ${playerColor} in room ${roomId} has already been used. Cannot change isActive state.`);
+            // Optionally inform client it's already used if they try to activate
+             const updatedPlayerAdvantageStates: Partial<PlayerAdvantageStates> = {
+              queens_domain: { ...playerQueensDomainState } 
+            };
+            io.to(socket.id).emit("advantageStateUpdated", updatedPlayerAdvantageStates);
+          }
+        } else {
+          console.warn(`[setAdvantageActiveState] Queen's Domain state not found for ${playerColor} in room ${roomId}. This might indicate an initialization issue.`);
+        }
+      }
+      // Can add else if for other advantages that might have client-toggleable active states
+    });
+
   });
 }

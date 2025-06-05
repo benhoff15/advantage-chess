@@ -5,6 +5,7 @@ export interface Advantage {
   name: string;
   description: string;
   rarity: Rarity;
+  serverValidation?: (params: any) => any; // Add this line
 }
 
 export interface ShieldedPieceInfo {
@@ -38,6 +39,10 @@ export interface PlayerAdvantageStates {
   openingSwap?: OpeningSwapState;
   pawnAmbush?: PawnAmbushState; // Added Pawn Ambush state
   hasUsedSacrificialBlessing?: boolean;
+  queens_domain?: {
+    isActive: boolean;
+    hasUsed: boolean;
+  };
   // Add other advantage states here as needed
 }
 
@@ -56,4 +61,6 @@ export interface ServerMovePayload {
   promotion?: string;
   secondTo?: string; // For Lightning Capture
   wasPawnAmbush?: boolean; // Added for Pawn Ambush
+  specialServerEffect?: string; // Add this line (e.g., 'queens_domain_consumed')
+  afterFen?: string; // Add this line
 }

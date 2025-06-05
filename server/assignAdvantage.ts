@@ -24,9 +24,9 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 const testSequence: Advantage[] = [
   {
-    id: "restless_king",
-    name: "Restless King",
-    description: "If your king moves, your opponent cannot give check on their next turn.",
+    id: "queens_domain",
+    name: "Queen’s Domain",
+    description: "Your queen may pass through friendly pieces once per game.",
     rarity: "common"
   },
   { 
