@@ -712,17 +712,17 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       return null;
     }
 
-    if (restrictedToPieceType && myColor && game.turn() === myColor[0]) {
+    if (restrictedToPieceType && myColor && game.turn() === myColor[0] && !game.inCheck()) { // Added !game.inCheck()
       if (typeof from === 'string') {
         const pieceOnFromSquare = game.get(from as Square); 
         if (!pieceOnFromSquare || pieceOnFromSquare.type !== restrictedToPieceType) {
           const pieceDisplayNames: { [key: string]: string } = { "p": "Pawn", "n": "Knight", "b": "Bishop", "r": "Rook", "q": "Queen", "k": "King" };
           const niceName = restrictedToPieceType ? (pieceDisplayNames[restrictedToPieceType] || restrictedToPieceType) : "specified piece";
-          alert(`Royal Decree Active: You must move a ${niceName}.`);
+          alert(`Royal Decree Active: You must move a ${niceName}. (You are not in check)`); // Optional: slightly modified message
           return null; 
         }
       } else {
-        console.warn('[Royal Decree Client] makeMove called with invalid "from" square:', from);
+        console.warn('[Royal Decree Client] makeMove called with invalid "from" square during Royal Decree (and not in check):', from);
         return null;
       }
     }
