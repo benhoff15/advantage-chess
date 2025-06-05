@@ -397,29 +397,50 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
             "[ChessGame handleReceiveMove] Failed to apply opponent's Corner Blitz move.",
           );
         }
-      } else {
-        console.log(
-          `[ChessGame handleReceiveMove] Attempting to apply opponent's STANDARD move: ${JSON.stringify(receivedMove)} on FEN: ${currentFenBeforeOpponentMove}`,
-        );
-        const standardMove = game.move({
-          from: receivedMove.from,
-          to: receivedMove.to,
-          promotion: receivedMove.promotion
-            ? (receivedMove.promotion as any)
-            : undefined,
-        });
+      } else { // Standard move from opponent
+        const localIsSBActive = useSacrificialBlessingStore.getState().isSacrificialBlessingActive;
+        const myCurrentColor = color; // color from ChessGame component's state ('white' | 'black' | null)
+        
+        let isOpponentMove = false;
+        if (myCurrentColor && receivedMove.color) {
+          isOpponentMove = receivedMove.color !== myCurrentColor;
+        }
 
-        if (standardMove) {
-          setFen(game.fen());
+        if (localIsSBActive && isOpponentMove) {
+          console.log(`[ChessGame handleReceiveMove] Opponent's move (${receivedMove.from}-${receivedMove.to}) likely triggered Sacrificial Blessing. Main 'game' FEN is assumed to be updated by blessing handler. Current game.fen(): ${game.fen()}.`);
+          
+          if (fen !== game.fen()) {
+            setFen(game.fen());
+          }
           moveSuccessfullyApplied = true;
-          console.log(
-            `[ChessGame handleReceiveMove] Opponent's standard move applied. New FEN: ${game.fen()}`,
-          );
         } else {
-          console.error(
-            `[ChessGame handleReceiveMove] Standard game.move() FAILED for opponent's received move. ` +
-              `Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}. Game history: ${JSON.stringify(game.history({ verbose: true }))}`,
+          console.log(
+            `[ChessGame handleReceiveMove] Attempting to apply opponent's STANDARD move: ${JSON.stringify(receivedMove)} on FEN: ${currentFenBeforeOpponentMove}`,
           );
+          
+          const tempGameForMove = new Chess(currentFenBeforeOpponentMove);
+          const standardMoveAttempt = tempGameForMove.move({
+            from: receivedMove.from,
+            to: receivedMove.to,
+            promotion: receivedMove.promotion
+              ? (receivedMove.promotion as any)
+              : undefined,
+          });
+
+          if (standardMoveAttempt) {
+            game.load(tempGameForMove.fen());
+            setFen(game.fen());
+            moveSuccessfullyApplied = true;
+            console.log(
+              `[ChessGame handleReceiveMove] Opponent's standard move applied. New main game FEN: ${game.fen()}`,
+            );
+          } else {
+            console.error(
+              `[ChessGame handleReceiveMove] Standard game.move() FAILED for opponent's received move. ` +
+                `Move: ${JSON.stringify(receivedMove)}. FEN before attempt: ${currentFenBeforeOpponentMove}. ` +
+                `Game history of temp instance: ${JSON.stringify(tempGameForMove.history({ verbose: true }))}. `
+            );
+          }
         }
       }
 
@@ -591,6 +612,7 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
     const handleSacrificialBlessingTriggered = ({ availablePieces, fenAfterCapture }: { availablePieces: SacrificialBlessingPiece[], fenAfterCapture: string }) => {
       if (myAdvantage?.id === 'sacrificial_blessing' && !hasUsedMySacrificialBlessing && color) {
         console.log('[ChessGame] sacrificialBlessingTriggered. Loading FEN for blessing:', fenAfterCapture, 'Available Pieces:', availablePieces);
+        console.log('[SB Debug] Received fenAfterCapture:', fenAfterCapture);
         
         // Load this specific FEN to ensure game object is perfectly synced for UI activation
         game.load(fenAfterCapture); 
@@ -727,10 +749,13 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
           const targetSquareInfo = game.get(squareClicked);
           // console.log(`[SB Debug] onSquareClick: Target square ${squareClicked} clicked. Piece info:`, targetSquareInfo, "Is it null?", targetSquareInfo === null); // Removed
           if (targetSquareInfo === null) { // Target square must be empty
+            console.log('[SB Debug onSquareClick] Attempting placement. Current game.fen():', game.fen());
+            console.log('[SB Debug onSquareClick] Clicked square for placement:', squareClicked, 'Content:', game.get(squareClicked));
             if (roomId) {
               placeBlessingPieceClient(roomId, squareClicked);
             }
           } else {
+            console.log('[SB Debug onSquareClick] Target square occupied. Piece details:', game.get(squareClicked));
             alert("Invalid target: Square is not empty. Click your selected piece again to deselect it, or choose an empty (yellow) square.");
           }
         }
@@ -1623,6 +1648,8 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
                 styles[p.square] = { ...styles[p.square], background: "rgba(173, 216, 230, 0.7)", cursor: 'pointer' };
               });
               if (selectedPieceForBlessing) {
+                console.log('[SB Debug customSquareStyles] Current game.fen():', game.fen());
+                let emptySquaresCount = 0;
                 styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0, 128, 0, 0.7)" };
                 
                 // let emptySquaresFoundForHighlighting = 0; // Removed
@@ -1632,11 +1659,13 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
                     const pieceOnSquare = game.get(s as Square);
                     // console.log(`[SB Debug] Checking square ${s}:`, pieceOnSquare); // Optional: very verbose
                     if (pieceOnSquare === null) {
+                      emptySquaresCount++;
                       // emptySquaresFoundForHighlighting++; // Removed
                       styles[s] = { ...(styles[s] || {}), background: "rgba(255, 255, 0, 0.4)", cursor: 'pointer' };
                     }
                   }
                 }
+                console.log('[SB Debug customSquareStyles] Number of empty squares found for highlighting:', emptySquaresCount);
                 // console.log(`[SB Debug] customSquareStyles: Found ${emptySquaresFoundForHighlighting} empty squares to highlight yellow.`); // Removed
               }
             }

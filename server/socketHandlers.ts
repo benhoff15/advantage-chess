@@ -712,6 +712,7 @@ export function setupSocketHandlers(io: Server) {
                   }
             
                   if (targetPlayerSocketId) {
+                    console.log(`[SB Debug Server] Emitting sacrificialBlessingTriggered. fenAfterCapture being sent: ${room.fen}`);
                     io.to(targetPlayerSocketId).emit('sacrificialBlessingTriggered', { availablePieces, fenAfterCapture: room.fen });
                     console.log(`[Sacrificial Blessing] Triggered for ${playerColorString} (${targetPlayerSocketId}). Available pieces:`, availablePieces, `FEN: ${room.fen}`);
                   }
