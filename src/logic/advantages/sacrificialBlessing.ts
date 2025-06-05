@@ -11,7 +11,8 @@ interface SacrificialBlessingState {
   isSacrificialBlessingActive: boolean;
   availablePieces: SacrificialBlessingPiece[];
   selectedPiece: SacrificialBlessingPiece | null;
-  activate: (pieces: SacrificialBlessingPiece[]) => void;
+  currentBlessingFen: string | null; // Added to store the FEN at the moment of activation
+  activate: (pieces: SacrificialBlessingPiece[], fenAfterCapture: string) => void; // Updated signature
   selectPiece: (piece: SacrificialBlessingPiece) => void;
   deselectPiece: () => void;
   placePiece: (roomId: string, toSquare: Square) => void;
@@ -23,13 +24,15 @@ export const useSacrificialBlessingStore = create<SacrificialBlessingState>((set
   isSacrificialBlessingActive: false,
   availablePieces: [],
   selectedPiece: null,
+  currentBlessingFen: null, // Initial state for the new field
 
-  activate: (pieces) => {
-    console.log('[SacrificialBlessingStore] Activating with pieces:', pieces);
+  activate: (pieces, fenAfterCapture) => { // Updated signature
+    console.log('[SacrificialBlessingStore] Activating. Pieces:', pieces, 'FEN:', fenAfterCapture);
     set({
       isSacrificialBlessingActive: true,
       availablePieces: pieces,
       selectedPiece: null,
+      currentBlessingFen: fenAfterCapture, // Store the FEN
     });
   },
 
@@ -65,8 +68,9 @@ export const useSacrificialBlessingStore = create<SacrificialBlessingState>((set
       isSacrificialBlessingActive: false,
       // Keep available pieces and selected piece for potential UI needs until explicitly reset,
       // or clear them here if preferred:
-      // availablePieces: [], 
+      // availablePieces: [],
       // selectedPiece: null,
+      currentBlessingFen: null, // Reset FEN on deactivate
     });
   },
   
@@ -76,6 +80,7 @@ export const useSacrificialBlessingStore = create<SacrificialBlessingState>((set
       isSacrificialBlessingActive: false,
       availablePieces: [],
       selectedPiece: null,
+      currentBlessingFen: null, // Reset FEN on full reset
     });
   }
 }));

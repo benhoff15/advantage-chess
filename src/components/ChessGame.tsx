@@ -610,15 +610,16 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
     socket.on("openingSwapFailed", handleOpeningSwapFailed);
 
     const handleSacrificialBlessingTriggered = ({ availablePieces, fenAfterCapture }: { availablePieces: SacrificialBlessingPiece[], fenAfterCapture: string }) => {
+      console.log('[ChessGame] Raw sacrificialBlessingTriggered event data:', { availablePieces, fenAfterCapture });
       if (myAdvantage?.id === 'sacrificial_blessing' && !hasUsedMySacrificialBlessing && color) {
-        console.log('[ChessGame] sacrificialBlessingTriggered. Loading FEN for blessing:', fenAfterCapture, 'Available Pieces:', availablePieces);
-        console.log('[SB Debug] Received fenAfterCapture:', fenAfterCapture);
+        console.log('[ChessGame] sacrificialBlessingTriggered. Storing FEN for blessing:', fenAfterCapture, 'Available Pieces:', availablePieces);
+        console.log('[SB Debug] Received fenAfterCapture for blessing store:', fenAfterCapture);
         
-        // Load this specific FEN to ensure game object is perfectly synced for UI activation
+        // Load FEN into main game instance for safety, though blessing logic should use store's FEN.
         game.load(fenAfterCapture); 
-        setFen(fenAfterCapture); // Update main fen state as well
+        // setFen(fenAfterCapture); // DO NOT set main FEN here; blessing uses its own FEN from the store. Main FEN updates on blessing completion.
 
-        activateSacrificialBlessing(availablePieces);
+        activateSacrificialBlessing(availablePieces, fenAfterCapture); // Pass FEN to store
         alert("Sacrificial Blessing Triggered! Select one of your highlighted Knights or Bishops, then an empty square to move it to.");
       }
     };
@@ -746,16 +747,36 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
         if (squareClicked === selectedPieceForBlessing.square) {
           deselectBlessingPiece();
         } else {
-          const targetSquareInfo = game.get(squareClicked);
-          // console.log(`[SB Debug] onSquareClick: Target square ${squareClicked} clicked. Piece info:`, targetSquareInfo, "Is it null?", targetSquareInfo === null); // Removed
-          if (targetSquareInfo === null) { // Target square must be empty
-            console.log('[SB Debug onSquareClick] Attempting placement. Current game.fen():', game.fen());
-            console.log('[SB Debug onSquareClick] Clicked square for placement:', squareClicked, 'Content:', game.get(squareClicked));
+          // Validate using the FEN from the store, which reflects the board state after the capture
+          const blessingFenForValidation = useSacrificialBlessingStore.getState().currentBlessingFen;
+          if (!blessingFenForValidation) {
+            console.error('[SB Debug onSquareClick] No blessingFenForValidation available from store.');
+            alert('Error: Blessing state is inconsistent. Cannot validate move. Please cancel and retry.');
+            return;
+          }
+
+          const validationGame = new Chess();
+          console.log('[SB Debug onSquareClick] validationGame created. Initial FEN:', validationGame.fen());
+          try {
+            validationGame.load(blessingFenForValidation);
+            console.log('[SB Debug onSquareClick] validationGame loaded with store FEN. Current FEN:', validationGame.fen());
+          } catch (e) {
+            console.error("[SB Debug onSquareClick] Error loading FEN from store into validationGame:", e);
+            alert("Error validating move: Game state issue (store FEN). Please try cancelling the blessing and retrying if the issue persists.");
+            return;
+          }
+          console.log('[SB Debug onSquareClick] FEN from store for validation:', validationGame.fen()); // This log might be redundant now or can be kept for clarity
+          console.log('[SB Debug onSquareClick] Clicked square for placement:', squareClicked);
+          const pieceOnTarget = validationGame.get(squareClicked as Square);
+          console.log('[SB Debug onSquareClick] Piece on target for placement:', pieceOnTarget);
+          console.log('[SB Debug onSquareClick] Typeof pieceOnTarget:', typeof pieceOnTarget);
+
+          if (pieceOnTarget === null || typeof pieceOnTarget === 'undefined') { // Target square must be empty based on the store's FEN
             if (roomId) {
               placeBlessingPieceClient(roomId, squareClicked);
             }
           } else {
-            console.log('[SB Debug onSquareClick] Target square occupied. Piece details:', game.get(squareClicked));
+            console.log('[SB Debug onSquareClick] Target square occupied. Piece details:', pieceOnTarget);
             alert("Invalid target: Square is not empty. Click your selected piece again to deselect it, or choose an empty (yellow) square.");
           }
         }
@@ -1648,25 +1669,39 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
                 styles[p.square] = { ...styles[p.square], background: "rgba(173, 216, 230, 0.7)", cursor: 'pointer' };
               });
               if (selectedPieceForBlessing) {
-                console.log('[SB Debug customSquareStyles] Current game.fen():', game.fen());
+                const blessingFenForStyling = useSacrificialBlessingStore.getState().currentBlessingFen;
+                if (!blessingFenForStyling) {
+                  console.error('[SB Debug customSquareStyles] No blessingFenForStyling available from store.');
+                  // Potentially return styles as is, or indicate an error state in styling.
+                  // For now, just log and don't highlight empty squares if FEN is missing.
+                  return styles; 
+                }
+
+                const stylingGame = new Chess();
+                console.log('[SB Debug customSquareStyles] stylingGame created. Initial FEN:', stylingGame.fen());
+                try {
+                  stylingGame.load(blessingFenForStyling); 
+                  console.log('[SB Debug customSquareStyles] stylingGame loaded with store FEN. Current FEN:', stylingGame.fen());
+                } catch (e) {
+                  console.error("[SB Debug customSquareStyles] Error loading FEN from store into stylingGame:", e);
+                  return styles; // Fallback: return current styles without empty square highlights
+                }
+                console.log('[SB Debug customSquareStyles] FEN from store for styling:', stylingGame.fen()); // This log might be redundant now or can be kept for clarity
                 let emptySquaresCount = 0;
                 styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0, 128, 0, 0.7)" };
                 
-                // let emptySquaresFoundForHighlighting = 0; // Removed
                 for (let r = 1; r <= 8; r++) {
                   for (let c = 0; c < 8; c++) {
                     const s = String.fromCharCode(97 + c) + r;
-                    const pieceOnSquare = game.get(s as Square);
-                    // console.log(`[SB Debug] Checking square ${s}:`, pieceOnSquare); // Optional: very verbose
-                    if (pieceOnSquare === null) {
+                    const pieceOnSquare = stylingGame.get(s as Square);
+                    console.log('[SB Debug customSquareStyles] Square:', s, 'Piece:', pieceOnSquare, 'Typeof Piece:', typeof pieceOnSquare, 'is Empty (null or undefined):', pieceOnSquare === null || typeof pieceOnSquare === 'undefined');
+                    if (pieceOnSquare === null || typeof pieceOnSquare === 'undefined') {
                       emptySquaresCount++;
-                      // emptySquaresFoundForHighlighting++; // Removed
                       styles[s] = { ...(styles[s] || {}), background: "rgba(255, 255, 0, 0.4)", cursor: 'pointer' };
                     }
                   }
                 }
-                console.log('[SB Debug customSquareStyles] Number of empty squares found for highlighting:', emptySquaresCount);
-                // console.log(`[SB Debug] customSquareStyles: Found ${emptySquaresFoundForHighlighting} empty squares to highlight yellow.`); // Removed
+                console.log('[SB Debug customSquareStyles] Empty squares based on store FEN:', emptySquaresCount);
               }
             }
             return styles;

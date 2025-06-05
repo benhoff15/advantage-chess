@@ -68,7 +68,11 @@ export function handleSacrificialBlessingPlacement(
     return { success: false, error: 'Invalid piece selected or piece not found at ' + pieceSquare };
   }
 
-  if (game.get(toSquare) !== null) {
+  const pieceOnTarget = game.get(toSquare);
+  console.log('[SB Server handleSacrificialBlessingPlacement] Target Square:', toSquare, 'Piece on Target:', pieceOnTarget, 'Typeof Piece:', typeof pieceOnTarget);
+
+  // pieceOnTarget is already defined from the logging addition above
+  if (pieceOnTarget !== null && typeof pieceOnTarget !== 'undefined') {
     return { success: false, error: 'Target square is not empty.' };
   }
 
