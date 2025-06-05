@@ -27,10 +27,16 @@ export interface OpeningSwapState {
   hasSwapped: boolean;
 }
 
+// New state for Pawn Ambush
+export interface PawnAmbushState {
+  ambushedPawns: string[]; // Stores initial squares of pawns that have used ambush, e.g., ["e2", "g7"]
+}
+
 export interface PlayerAdvantageStates {
   royalEscort?: RoyalEscortState;
   lightningCapture?: LightningCaptureState;
   openingSwap?: OpeningSwapState;
+  pawnAmbush?: PawnAmbushState; // Added Pawn Ambush state
   // Add other advantage states here as needed
 }
 
@@ -43,4 +49,5 @@ export interface ServerMovePayload {
   rookTo?: string;
   promotion?: string;
   secondTo?: string; // For Lightning Capture
+  wasPawnAmbush?: boolean; // Added for Pawn Ambush
 }

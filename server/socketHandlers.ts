@@ -17,7 +17,8 @@ import {
 import { selectProtectedPiece } from "./logic/advantages/silentShield";
 import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
 import { validateLightningCaptureServerMove } from './logic/advantages/lightningCapture';
-import { LightningCaptureState } from "../shared/types";
+import { LightningCaptureState, PawnAmbushState } from "../shared/types"; // Added PawnAmbushState
+import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 
 console.log("setupSocketHandlers loaded");
 
@@ -50,6 +51,8 @@ type RoomState = {
   };
   whiteOpeningSwapState?: OpeningSwapState;
   blackOpeningSwapState?: OpeningSwapState;
+  whitePawnAmbushState?: PawnAmbushState; // Added
+  blackPawnAmbushState?: PawnAmbushState; // Added
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -116,6 +119,8 @@ export function setupSocketHandlers(io: Server) {
           whiteLightningCaptureState: { used: false }, // Default init
           blackLightningCaptureState: { used: false }, // Default init
           silentShieldPieces: { white: null, black: null },
+          whitePawnAmbushState: undefined, // Added
+          blackPawnAmbushState: undefined, // Added
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
@@ -124,6 +129,8 @@ export function setupSocketHandlers(io: Server) {
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
         if (!room.whiteLightningCaptureState) room.whiteLightningCaptureState = { used: false };
         if (!room.blackLightningCaptureState) room.blackLightningCaptureState = { used: false };
+        if (!room.whitePawnAmbushState && room.whiteAdvantage?.id === "pawn_ambush") room.whitePawnAmbushState = { ambushedPawns: [] }; // Added
+        if (!room.blackPawnAmbushState && room.blackAdvantage?.id === "pawn_ambush") room.blackPawnAmbushState = { ambushedPawns: [] }; // Added
         if (!room.whiteFocusedBishopState) room.whiteFocusedBishopState = { focusedBishopUsed: false };
         if (!room.blackFocusedBishopState) room.blackFocusedBishopState = { focusedBishopUsed: false };
         if (!room.whiteRooksMoved) room.whiteRooksMoved = { a1: false, h1: false, a8: false, h8: false };
@@ -182,6 +189,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whiteOpeningSwapState = { hasSwapped: false };
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
+            } else if (room.whiteAdvantage.id === "pawn_ambush") { // Added
+                room.whitePawnAmbushState = { ambushedPawns: [] }; // Added
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage }); // Standard emission
+                console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`); // Added
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -210,6 +221,10 @@ export function setupSocketHandlers(io: Server) {
                 room.blackOpeningSwapState = { hasSwapped: false };
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Opening Swap, state initialized.`);
+            } else if (room.blackAdvantage.id === "pawn_ambush") { // Added
+                room.blackPawnAmbushState = { ambushedPawns: [] }; // Added
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage }); // Standard emission for black
+                console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`); // Added
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -537,59 +552,100 @@ export function setupSocketHandlers(io: Server) {
         
         // Universal post-move processing (if moveResult is not null)
         if (moveResult) {
-          const currentResultFen = serverGame.fen(); // FEN after successful move 
+          let pawnAmbushFinalState: PawnAmbushState | undefined;
+          let fenAfterPotentialAmbush = serverGame.fen(); // FEN after standard move, before ambush logic
+          let ambushAppliedThisTurn = false;
+          const currentPlayerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+
+          // Apply Pawn Ambush if applicable. This modifies serverGame.
+          if (currentPlayerAdvantage?.id === 'pawn_ambush' && senderColor && moveResult.piece === 'p') {
+            const pawnAmbushParams: Parameters<typeof handlePawnAmbushServer>[0] = {
+              game: serverGame, // serverGame is already updated by the initial serverGame.move()
+              move: moveResult, // The result of the successful pawn move
+              playerColor: senderColor[0] as 'w' | 'b',
+              currentRoomState: {
+                whitePawnAmbushState: room.whitePawnAmbushState,
+                blackPawnAmbushState: room.blackPawnAmbushState,
+                fen: serverGame.fen() 
+              }
+            };
+            
+            console.log(`[sendMove] Checking Pawn Ambush for ${senderColor}. Move: ${moveResult.from}-${moveResult.to}`);
+            const ambushResult = handlePawnAmbushServer(pawnAmbushParams);
+
+            if (ambushResult.promotionApplied && ambushResult.newFen) {
+              // serverGame was already modified by handlePawnAmbushServer
+              fenAfterPotentialAmbush = ambushResult.newFen; 
+              pawnAmbushFinalState = ambushResult.updatedPawnAmbushState;
+              ambushAppliedThisTurn = true;
+              console.log(`[sendMove] Pawn Ambush provisionally applied for ${senderColor}. New FEN: ${fenAfterPotentialAmbush}`);
+              // DO NOT set room.fen or room.xxxPawnAmbushState yet. That happens after deflection check.
+            }
+          }
+          // serverGame instance now reflects the state after the original move AND potential ambush promotion.
+          // fenAfterPotentialAmbush holds the FEN of this state.
 
           const isDeflected = handleAutoDeflect({
-            game: serverGame, 
-            moveResult: moveResult, 
+            game: serverGame, // Pass the game state that includes any ambush modifications
+            moveResult: moveResult, // Original move object
             opponentAdvantage: opponentAdvantage,
           });
 
           if (isDeflected) {
-            if (serverGame.fen() !== originalFenBeforeAttempt!) {
-                 serverGame.load(originalFenBeforeAttempt!); // Revert serverGame
-            }
+            serverGame.load(originalFenBeforeAttempt); // Revert game instance to state before player's move
+            room.fen = originalFenBeforeAttempt;      // Revert authoritative room FEN
+            // Ambush is implicitly reverted because its changes to serverGame are wiped by load(),
+            // and pawnAmbushFinalState is not committed to the room state.
+            console.log(`[sendMove] Move by ${senderColor} was deflected. FEN reverted to ${originalFenBeforeAttempt}.`);
             socket.emit("moveDeflected", { move: clientMoveData }); 
           } else {
-            // Authoritative FEN update was already done by the specific handler
-            // if it modified serverGame and we set room.fen = serverGame.fen().
-            // For standard moves, room.fen is updated here.
-            if (room.fen !== currentResultFen && !receivedMove.special) { // Standard move path
-                 room.fen = currentResultFen;
-            } else if (room.fen !== currentResultFen && receivedMove.special) {
-
+            // NOT deflected. Commit everything.
+            room.fen = fenAfterPotentialAmbush; // Commit FEN (post-move, post-ambush)
+            
+            if (ambushAppliedThisTurn && pawnAmbushFinalState) {
+              if (senderColor === 'white') {
+                room.whitePawnAmbushState = pawnAmbushFinalState;
+              } else {
+                room.blackPawnAmbushState = pawnAmbushFinalState;
+              }
+              console.log(`[sendMove] Pawn Ambush for ${senderColor} committed. State:`, pawnAmbushFinalState);
             }
-             if (room.fen !== currentResultFen && (receivedMove.special?.startsWith("castle-master") || receivedMove.special === "pawn_rush_manual")) {
-                 room.fen = currentResultFen; // This should be fine if all handlers update serverGame.
-            }
 
-            // ---- Start of Silent Shield currentSquare update ----
+            // ---- Start of Silent Shield currentSquare update ---- (Keep as is, but uses the final serverGame state)
             let updatedShieldedPieceForEmit: ShieldedPieceInfo | null = null;
-            if (room.silentShieldPieces && senderColor && moveResult) { // moveResult must be non-null here
+            if (room.silentShieldPieces && senderColor && moveResult) { 
               const playerShieldInfo = room.silentShieldPieces[senderColor];
               if (playerShieldInfo && moveResult.from === playerShieldInfo.currentSquare) {
-                playerShieldInfo.currentSquare = moveResult.to;
+                // If ambush happened, moveResult.to is where the pawn *landed* then promoted.
+                // If the shielded piece was this pawn, its 'to' square is correct.
+                playerShieldInfo.currentSquare = moveResult.to; 
                 updatedShieldedPieceForEmit = playerShieldInfo;
-                console.log(`[SilentShield] Player ${senderColor}'s shielded piece ${playerShieldInfo.type} moved from ${moveResult.from} to ${moveResult.to}. Updated currentSquare.`);
               }
             }
             // ---- End of Silent Shield currentSquare update ----
 
-            console.log(`[sendMove] Move by ${senderColor} validated. New FEN for room ${roomId}: ${room.fen}`);
+            console.log(`[sendMove] Move by ${senderColor} validated (not deflected). Final FEN for room ${roomId}: ${room.fen}`);
             
-            // Ensure the move data to be broadcast includes the sender's color
-            const moveDataForBroadcast: ServerMovePayload = { // Use ServerMovePayload
-                ...clientMoveData, // Spread original client move data
-                color: senderColor! // Explicitly set/override color with server's authoritative senderColor
-                                   // The '!' asserts senderColor is not null here, which it should be.
+            const moveDataForBroadcast: ServerMovePayload = {
+                ...clientMoveData, 
+                color: senderColor!,
+                ...(ambushAppliedThisTurn && { wasPawnAmbush: true }) 
             };
+            
+            if (moveResult.promotion && ambushAppliedThisTurn) {
+                console.warn("[sendMove] Conflict: Standard promotion and Pawn Ambush on same move? This shouldn't happen if ranks are different.");
+                moveDataForBroadcast.wasPawnAmbush = false; 
+                moveDataForBroadcast.promotion = moveResult.promotion;
+            } else if (ambushAppliedThisTurn) {
+                moveDataForBroadcast.promotion = 'q'; // Explicitly state queen promotion due to ambush
+            }
+
 
             const payload = {
-                move: moveDataForBroadcast, // Use the modified move data
+                move: moveDataForBroadcast,
                 ...(updatedShieldedPieceForEmit && { updatedShieldedPiece: updatedShieldedPieceForEmit })
             };
             io.to(roomId).emit("receiveMove", payload);
-
           }
         } else {
           // This block executes if moveResult is null.

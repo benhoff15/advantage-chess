@@ -35,6 +35,10 @@ import {
   handleLightningCaptureClient,
   applyLightningCaptureOpponentMove,
 } from "../logic/advantages/lightningCapture";
+import {
+  handlePawnAmbushClient,
+  applyPawnAmbushOpponentMove,
+} from "../logic/advantages/pawnAmbush";
 import { Move } from "chess.js";
 
 export default function ChessGame() {
@@ -382,6 +386,14 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
           setGameOverMessage("Draw by Threefold Repetition");
         } else if (game.isInsufficientMaterial()) {
           setGameOverMessage("Draw by Insufficient Material");
+        }
+        // Add Pawn Ambush check for opponent's move
+        if (receivedMove.color !== color) { // Ensure it's opponent's move before this specific log/check
+            const ambushCheckResult = applyPawnAmbushOpponentMove({ game, receivedMove });
+            if (ambushCheckResult.ambushRecognized) {
+                // Log already happens in applyPawnAmbushOpponentMove.
+                console.log("[ChessGame handleReceiveMove] Opponent's Pawn Ambush recognized.");
+            }
         }
       } else {
         console.warn(
@@ -1050,15 +1062,71 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
           (piece.color === "b" && to[1] === "1"));
       try {
         const gameForStandardMove = new Chess(fenSnapshotBeforeMove.current);
-        const standardMoveAttempt = gameForStandardMove.move({
+        const standardMoveAttempt = gameForStandardMove.move({ // This is a chess.js Move object
           from,
           to,
           ...(isPawnPromotion ? { promotion: "q" } : {}),
         });
+
         if (standardMoveAttempt) {
-          move = standardMoveAttempt;
-          game.load(gameForStandardMove.fen());
+          // Standard move was locally valid.
+          // NOW, check for Pawn Ambush for the current player.
+          let serverPayload: ServerMovePayload = { // Prepare payload based on standard move first
+            from: standardMoveAttempt.from,
+            to: standardMoveAttempt.to,
+            color: myColor, // myColor is 'white' | 'black'
+            promotion: standardMoveAttempt.promotion // Standard 8th rank promotion
+          };
+
+          if (standardMoveAttempt.piece === 'p' && !standardMoveAttempt.promotion && myAdvantage?.id === 'pawn_ambush' && myColor) {
+            // Pawn move, not a standard promotion, player has ambush.
+            // Use a temporary game instance that reflects the board *after* standardMoveAttempt.
+            const gameAfterPawnMove = new Chess(gameForStandardMove.fen());
+            
+            const ambushResult = handlePawnAmbushClient({
+              game: gameAfterPawnMove, // This game instance is modified by handlePawnAmbushClient
+              move: standardMoveAttempt, // Original pawn move
+              playerColor: myColor,
+              advantage: myAdvantage,
+            });
+
+            if (ambushResult.promotionApplied && ambushResult.fen) {
+              console.log("[ChessGame makeMove] Pawn Ambush applied locally by client. Updating board and payload.");
+              game.load(ambushResult.fen); // Update main 'game' instance with the ambushed state
+              setFen(ambushResult.fen);     // Update UI
+
+              // Modify the serverPayload to reflect ambush
+              serverPayload.wasPawnAmbush = true;
+              serverPayload.promotion = 'q'; // Ambush promotes to queen
+              
+              // Emit this special move and return, bypassing generic emit further down.
+              socket.emit("sendMove", { roomId, move: serverPayload });
+              // Game Over Checks
+              if (game.isCheckmate()) {
+                const winnerLogic = game.turn() === "w" ? "black" : "white";
+                setGameOverMessage(`${winnerLogic} wins by checkmate`);
+                socket.emit("gameOver", { roomId, message: `${winnerLogic} wins by checkmate!`, winnerColor: winnerLogic });
+              } else if (game.isDraw()) {
+                setGameOverMessage("Draw");
+                socket.emit("gameDraw", { roomId, message: "Draw!" });
+              } else if (game.isStalemate()) {
+                setGameOverMessage("Draw by Stalemate");
+                socket.emit("gameDraw", { roomId, message: "Stalemate!" });
+              } else if (game.isThreefoldRepetition()) {
+                setGameOverMessage("Draw by Threefold Repetition");
+                socket.emit("gameDraw", { roomId, message: "Draw by threefold repetition!" });
+              } else if (game.isInsufficientMaterial()) {
+                setGameOverMessage("Draw by Insufficient Material");
+                socket.emit("gameDraw", { roomId, message: "Draw by insufficient material!" });
+              }
+              return standardMoveAttempt; // Return original pawn move for react-chessboard
+            }
+          }
+          
+          // If Pawn Ambush did not apply, or was not relevant, proceed with the standard move.
+          game.load(gameForStandardMove.fen()); // Load the result of the standard move into the main game instance
           setFen(game.fen());
+          move = standardMoveAttempt; // This will be converted to ServerMovePayload by the generic emit block.
         } else {
           console.log(
             "[ChessGame] makeMove: Standard game.move() returned null (invalid standard move).",
@@ -1076,18 +1144,27 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
     }
 
     // Emit standard moves or special moves that didn't emit themselves and return early
-    // (This block should now primarily handle standard moves if 'move' got populated by the standard logic)
     if (move) {
-      // If 'move' is populated here, it means it was a successful standard move or pawn rush.
-      // Special moves like Corner Blitz, Focused Bishop, Castle Master should have returned earlier.
-      console.log(
-        "[ChessGame] makeMove: Emitting standard or Pawn Rush move to server:",
-        move,
-      );
-      setFen(game.fen()); // Ensure FEN is updated for standard moves too
-      socket.emit("sendMove", { roomId, move });
+      let movePayloadToSend: ServerMovePayload;
 
-      // Game over checks for standard moves / Pawn Rush
+      if (typeof (move as any).flags === 'string') { // Heuristic: if it's a chess.js Move object (standard move not ambushed)
+        movePayloadToSend = {
+          from: move.from,
+          to: move.to,
+          color: myColor!, 
+          promotion: move.promotion,
+        };
+      } else { // 'move' is already a ServerMovePayload from another advantage handler (e.g. Pawn Rush)
+        movePayloadToSend = move as ServerMovePayload;
+        if (!movePayloadToSend.color && myColor) {
+            movePayloadToSend.color = myColor;
+        }
+      }
+      
+      console.log("[ChessGame] makeMove: Emitting move to server (standard or other advantage):", movePayloadToSend);
+      socket.emit("sendMove", { roomId, move: movePayloadToSend });
+
+      // Game over checks for standard moves / Pawn Rush etc.
       if (game.isCheckmate()) {
         const winnerLogic = game.turn() === "w" ? "black" : "white";
         setGameOverMessage(`${winnerLogic} wins by checkmate`);

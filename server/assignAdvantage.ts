@@ -23,10 +23,11 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "opening_swap",
-    name: "Opening Swap",
-    description: "You may swap two non-king pieces on your back rank before turn 1.",
-    rarity: "common"
+  {
+    id: "pawn_ambush",
+    name: "Pawn Ambush",
+    description: "A pawn promotes on reaching 6th rank.",
+    rarity: "rare"
   },
   { 
     id: "royal_escort",

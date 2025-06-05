@@ -11,7 +11,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "corner_blitz", name: "Corner Blitz", description: "Your rooks may leap over pawns on their first move.", rarity: "common"}, // done
   { id: "shield_wall", name: "Shield Wall", description: "Your pawns cannot be captured during the first 5 moves.", rarity: "common"}, // done
   { id: "focused_bishop", name: "Focused Bishop", description: "One of your bishops may move like a rook once.", rarity: "common"}, // done
-  { id: "opening_swap", name: "Opening Swap", description: "You may swap two non-king pieces on your back rank before turn 1.", rarity: "common"},
+  { id: "opening_swap", name: "Opening Swap", description: "You may swap two non-king pieces on your back rank before turn 1.", rarity: "common"}, // done
   { id: "royal_decree", name: "Royal Decree", description: "Once per game, you can force your opponent's next move to be with a specific piece type", rarity: "common"},
   { id: "sacrificial_blessing", name: "Sacrificial Blessing", description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.", rarity: "common"},
 
