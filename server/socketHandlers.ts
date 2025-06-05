@@ -75,8 +75,8 @@ export type RoomState = {
   restlessKingUsesLeft?: { white: number; black: number };
   whiteQueensDomainState?: { isActive: boolean; hasUsed: boolean };
   blackQueensDomainState?: { isActive: boolean; hasUsed: boolean };
-  whiteKnightmareState?: { usedSquares: string[]; };
-  blackKnightmareState?: { usedSquares: string[]; };
+  whiteKnightmareState?: { hasUsed: boolean };
+  blackKnightmareState?: { hasUsed: boolean };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -155,11 +155,11 @@ export function setupSocketHandlers(io: Server) {
           restlessKingUsesLeft: { white: 3, black: 3 },
           whiteQueensDomainState: { isActive: false, hasUsed: false },
           blackQueensDomainState: { isActive: false, hasUsed: false },
-          whiteKnightmareState: undefined,
-          blackKnightmareState: undefined,
+          whiteKnightmareState: { hasUsed: false }, // Initialize with hasUsed: false
+          blackKnightmareState: { hasUsed: false }, // Initialize with hasUsed: false
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Queen's Domain.`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare ({hasUsed: false}).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -184,8 +184,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.restlessKingUsesLeft === undefined) room.restlessKingUsesLeft = { white: 3, black: 3 };
         if (room.whiteQueensDomainState === undefined) room.whiteQueensDomainState = { isActive: false, hasUsed: false };
         if (room.blackQueensDomainState === undefined) room.blackQueensDomainState = { isActive: false, hasUsed: false };
-        if (room.whiteAdvantage?.id === "knightmare" && !room.whiteKnightmareState) room.whiteKnightmareState = { usedSquares: [] };
-        if (room.blackAdvantage?.id === "knightmare" && !room.blackKnightmareState) room.blackKnightmareState = { usedSquares: [] };
+        if (room.whiteAdvantage?.id === "knightmare" && (!room.whiteKnightmareState || typeof room.whiteKnightmareState.hasUsed === 'undefined')) room.whiteKnightmareState = { hasUsed: false };
+        if (room.blackAdvantage?.id === "knightmare" && (!room.blackKnightmareState || typeof room.blackKnightmareState.hasUsed === 'undefined')) room.blackKnightmareState = { hasUsed: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -250,9 +250,9 @@ export function setupSocketHandlers(io: Server) {
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
             } else if (room.whiteAdvantage.id === "knightmare") { 
-                room.whiteKnightmareState = { usedSquares: [] };
+                room.whiteKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Knightmare, state initialized.`);
+                console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -294,9 +294,9 @@ export function setupSocketHandlers(io: Server) {
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Queen's Domain, state initialized.`);
             } else if (room.blackAdvantage.id === "knightmare") {
-                room.blackKnightmareState = { usedSquares: [] };
+                room.blackKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Knightmare, state initialized.`);
+                console.log(`Black player (${socket.id}) assigned Knightmare, state initialized: ${JSON.stringify(room.blackKnightmareState)}`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -423,7 +423,7 @@ export function setupSocketHandlers(io: Server) {
         let currentPlayerRoyalEscortState_RE: RoyalEscortState | undefined;
         let currentPlayerLightningCaptureState_LC: LightningCaptureState | undefined;
         let playerQueensDomainState: { isActive: boolean; hasUsed: boolean } | undefined;
-        let currentPlayerKnightmareState: { usedSquares: string[] } | undefined;
+        let currentPlayerKnightmareState: { hasUsed: boolean } | undefined;
 
 
         if (senderColor === 'white') {
@@ -448,14 +448,20 @@ export function setupSocketHandlers(io: Server) {
             if (room.whiteAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState = { usedCount: 0 };
             if (room.whiteAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState = { used: false };
             if (room.whiteAdvantage?.id === "queens_domain" && !playerQueensDomainState) playerQueensDomainState = room.whiteQueensDomainState = { isActive: false, hasUsed: false };
-            if (room.whiteAdvantage?.id === "knightmare" && !currentPlayerKnightmareState) currentPlayerKnightmareState = room.whiteKnightmareState = { usedSquares: [] };
+            if (room.whiteAdvantage?.id === "knightmare" && (!currentPlayerKnightmareState || typeof currentPlayerKnightmareState.hasUsed === 'undefined')) {
+                 console.log(`[sendMove] Initializing/resetting whiteKnightmareState to {hasUsed: false} due to missing or malformed state.`);
+                 currentPlayerKnightmareState = room.whiteKnightmareState = { hasUsed: false };
+            }
         } else if (senderColor === 'black') {
             if (room.blackAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.blackFocusedBishopState = { focusedBishopUsed: false };
             if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
             if (room.blackAdvantage?.id === "royal_escort" && !currentPlayerRoyalEscortState_RE) currentPlayerRoyalEscortState_RE = room.blackRoyalEscortState = { usedCount: 0 };
             if (room.blackAdvantage?.id === "lightning_capture" && !currentPlayerLightningCaptureState_LC) currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState = { used: false };
             if (room.blackAdvantage?.id === "queens_domain" && !playerQueensDomainState) playerQueensDomainState = room.blackQueensDomainState = { isActive: false, hasUsed: false };
-            if (room.blackAdvantage?.id === "knightmare" && !currentPlayerKnightmareState) currentPlayerKnightmareState = room.blackKnightmareState = { usedSquares: [] };
+            if (room.blackAdvantage?.id === "knightmare" && (!currentPlayerKnightmareState || typeof currentPlayerKnightmareState.hasUsed === 'undefined')) {
+                console.log(`[sendMove] Initializing/resetting blackKnightmareState to {hasUsed: false} due to missing or malformed state.`);
+                currentPlayerKnightmareState = room.blackKnightmareState = { hasUsed: false };
+            }
         }
 
         // ---- Start of Silent Shield Capture Prevention ----
@@ -706,8 +712,13 @@ export function setupSocketHandlers(io: Server) {
           }
         } else if (receivedMove.special === 'knightmare') {
           const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
-          if (!currentPlayerKnightmareState || playerAdvantage?.id !== "knightmare") { // Ensure state and advantage match
-            socket.emit("invalidMove", { message: "Knightmare state not found or advantage mismatch.", move: clientMoveData });
+          // Ensure currentPlayerKnightmareState is defined before use, defaulting to { hasUsed: false } if not.
+          // This handles cases where the advantage was just assigned or if state was somehow lost.
+          const knightmareStateForValidation = currentPlayerKnightmareState || { hasUsed: false };
+          console.log(`[sendMove] Knightmare state for validation: ${JSON.stringify(knightmareStateForValidation)}`);
+
+          if (playerAdvantage?.id !== "knightmare") { 
+            socket.emit("invalidMove", { message: "Knightmare advantage not active for player.", move: clientMoveData });
             return; 
           }
           const validationGame = new Chess(originalFenBeforeAttempt!); 
@@ -716,7 +727,7 @@ export function setupSocketHandlers(io: Server) {
             clientMoveData: receivedMove,
             currentFen: originalFenBeforeAttempt!,
             playerColor: senderColor![0] as 'w' | 'b',
-            advantageState: currentPlayerKnightmareState,
+            advantageState: knightmareStateForValidation, // Pass the potentially defaulted state
           });
 
           moveResult = kmResult.moveResult;
@@ -958,11 +969,23 @@ export function setupSocketHandlers(io: Server) {
 
             console.log(`[sendMove] Move by ${senderColor} validated (not deflected). Final FEN for room ${roomId}: ${room.fen}`);
             
-            const moveDataForBroadcast: ServerMovePayload = {
+            let moveDataForBroadcast: ServerMovePayload = { // Changed to let
                 ...clientMoveData, 
                 color: senderColor!,
                 ...(ambushAppliedThisTurn && { wasPawnAmbush: true }) 
             };
+
+            // Add updated advantage states if applicable (specifically for Knightmare here)
+            if (receivedMove.special === 'knightmare' && senderColor) {
+                const playerKnightmareState = senderColor === 'white' ? room.whiteKnightmareState : room.blackKnightmareState;
+                if (playerKnightmareState) {
+                    const advStatesUpdate: Partial<PlayerAdvantageStates> = {
+                        knightmare: playerKnightmareState // This is already the kmResult.advantageStateUpdated
+                    };
+                    moveDataForBroadcast.updatedAdvantageStates = advStatesUpdate;
+                    console.log(`[sendMove] Knightmare by ${senderColor}: Attaching updatedAdvantageStates to broadcast: ${JSON.stringify(advStatesUpdate)}`);
+                }
+            }
 
             // Add afterFen to broadcast
             if (moveResult.after) { // Ensure moveResult.after exists (it's part of the Move type)

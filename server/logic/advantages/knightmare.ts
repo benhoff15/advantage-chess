@@ -9,7 +9,7 @@ const KNIGHTMARE_MOVES: { dx: number; dy: number }[] = [
 ];
 
 export interface KnightmareAdvantageState {
-  usedSquares: string[]; // Squares from which Knightmare has been used
+  hasUsed: boolean;
 }
 
 interface ValidateKnightmareServerMoveParams {
@@ -52,7 +52,7 @@ export function validateKnightmareServerMove({
   playerColor,
   advantageState,
 }: ValidateKnightmareServerMoveParams): ValidateKnightmareServerMoveResult {
-  console.log(`[KnightmareServer] Validating move: ${JSON.stringify(clientMoveData)} for player: ${playerColor}, FEN: ${currentFen}, usedSquares: ${JSON.stringify(advantageState.usedSquares)}`);
+  console.log(`[KnightmareServer] Validating Knightmare. Player: ${playerColor}, FEN: ${currentFen}, Advantage State: ${JSON.stringify(advantageState)}`);
 
   if (clientMoveData.special !== 'knightmare') {
     console.warn('[KnightmareServer] Incorrect special move type passed:', clientMoveData.special);
@@ -61,6 +61,17 @@ export function validateKnightmareServerMove({
       nextFen: currentFen,
       advantageStateUpdated: advantageState,
       error: "Internal error: Validate function called for non-Knightmare move.",
+    };
+  }
+
+  // Check if Knightmare has already been used
+  if (advantageState.hasUsed) {
+    console.warn(`[KnightmareServer] Knightmare advantage for player ${playerColor} has already been used.`);
+    return {
+      moveResult: null,
+      nextFen: currentFen,
+      advantageStateUpdated: advantageState, // or { hasUsed: true }
+      error: "Knightmare advantage has already been used.",
     };
   }
 
@@ -73,16 +84,6 @@ export function validateKnightmareServerMove({
       nextFen: currentFen,
       advantageStateUpdated: advantageState,
       error: "Piece is not a knight or not player's color.",
-    };
-  }
-
-  if (advantageState.usedSquares.includes(clientMoveData.from)) {
-    console.warn(`[KnightmareServer] Knightmare already used from ${clientMoveData.from}.`);
-    return {
-      moveResult: null,
-      nextFen: currentFen,
-      advantageStateUpdated: advantageState,
-      error: "Knightmare already used for this knight (from this square).",
     };
   }
 
@@ -197,11 +198,13 @@ export function validateKnightmareServerMove({
   // as it's handled by the ternary operator above.
 
   console.log(`[KnightmareServer] Move validated. From: ${fromSq}, To: ${toSq}. New FEN: ${constructedFen}. Captured: ${capturedPieceDetails ? capturedPieceDetails.type : 'none'}. SAN: ${moveResultObject.san}`);
+  
+  console.log(`[KnightmareServer] Marking Knightmare as used for player ${playerColor}.`);
   return {
     moveResult: moveResultObject,
     nextFen: constructedFen,
     advantageStateUpdated: {
-      usedSquares: [...advantageState.usedSquares, clientMoveData.from],
+      hasUsed: true,
     },
   };
 }

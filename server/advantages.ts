@@ -24,7 +24,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "pawn_ambush", name: "Pawn Ambush", description: "A pawn promotes on reaching 6th rank.", rarity: "rare" }, // done
   { id: "cloak", name: "Cloak", description: "One random piece starts invisible to the opponent. Lasts for 10 moves", rarity: "rare" },
   { id: "queenly_compensation", name: "Queenly Compensation", description: "When your queen is captured, a knight is summoned onto her home square. If the square is occupied, the knight replaces the occupying piece.", rarity: "rare"},
-  { id: "knightmare", name: "Knightmare", description: "Each knight may make a double L-move once.", rarity: "rare" },
+  { id: "knightmare", name: "Knightmare", description: "A knight may make a double L-move once.", rarity: "rare" },
   { id: "void_step", name: "Void Step", description: "One piece can pass through other pieces once.", rarity: "rare"},
   { id: "recall", name: "Recall", description: "Teleport any piece to its position 3 turns ago, once.", rarity: "rare" },
   { id: "lightning_capture", name: "Lightning Capture", description: "One piece captures and instantly moves again. Can be used only once. Must be activated before use.", rarity: "rare" }, // done

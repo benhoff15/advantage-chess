@@ -43,7 +43,7 @@ export interface PlayerAdvantageStates {
     isActive: boolean;
     hasUsed: boolean;
   };
-  knightmare?: { usedSquares: string[]; };
+  knightmare?: { hasUsed: boolean };
   // Add other advantage states here as needed
 }
 
@@ -64,4 +64,5 @@ export interface ServerMovePayload {
   wasPawnAmbush?: boolean; // Added for Pawn Ambush
   specialServerEffect?: string; // Add this line (e.g., 'queens_domain_consumed')
   afterFen?: string; // Add this line
+  updatedAdvantageStates?: Partial<PlayerAdvantageStates>;
 }

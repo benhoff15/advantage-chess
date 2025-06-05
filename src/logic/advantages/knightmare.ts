@@ -9,7 +9,7 @@ const KNIGHTMARE_MOVES: { dx: number; dy: number }[] = [
 ];
 
 export interface KnightmareClientAdvantageState {
-  usedSquares: string[];
+  hasUsed: boolean;
 }
 
 // Helper to convert square to 0-indexed coordinates
@@ -29,27 +29,27 @@ const coordsToSquare = (coords: { x: number; y: number }): Square | null => {
 };
 
 export function canKnightUseKnightmare(
-  from: string, // The square the knight is on
   advantageState: KnightmareClientAdvantageState | null | undefined
 ): boolean {
-  console.log(`[KM Client DEBUG] canKnightUseKnightmare called. From: ${from}, State: ${JSON.stringify(advantageState)}`);
-  if (!advantageState) {
-    console.log('[KM Client DEBUG] canKnightUseKnightmare: No advantage state provided, returning false.');
-    return false;
-  }
-  const isUsed = advantageState.usedSquares.includes(from);
-  console.log(`[KM Client DEBUG] canKnightUseKnightmare: Is square ${from} in usedSquares (${JSON.stringify(advantageState.usedSquares)})? ${isUsed}`);
-  const canUse = !isUsed;
-  console.log(`[KM Client DEBUG] canKnightUseKnightmare for knight on ${from}: ${canUse}.`);
+  console.log('[KM Client DEBUG] canKnightUseKnightmare called. State:', advantageState);
+  const canUse = !advantageState?.hasUsed;
+  console.log('[KM Client DEBUG] canKnightUseKnightmare result:', canUse);
   return canUse;
 }
 
 export function getKnightmareSquares(
   game: Chess, // Current game instance
   from: Square,
-  playerColor: 'w' | 'b' // Color of the knight's player
+  playerColor: 'w' | 'b', // Color of the knight's player
+  advantageState: KnightmareClientAdvantageState | null | undefined
 ): Square[] {
-  console.log(`[KM Client DEBUG] getKnightmareSquares called. From: ${from}, PlayerColor: ${playerColor}, CurrentFEN: ${game.fen()}`);
+  console.log(`[KM Client DEBUG] getKnightmareSquares called. From: ${from}, PlayerColor: ${playerColor}, State: ${JSON.stringify(advantageState)}, CurrentFEN: ${game.fen()}`);
+
+  if (!canKnightUseKnightmare(advantageState)) {
+    console.log('[KM Client DEBUG] getKnightmareSquares: Knightmare already used or state unavailable, returning no squares.');
+    return [];
+  }
+
   const validSquares: Square[] = [];
   const fromCoords = squareToCoords(from);
   const pieceAtFrom = game.get(from);
@@ -87,8 +87,10 @@ interface HandleKnightmareClientMoveParams {
   from: string;
   to: string;
   color: 'white' | 'black'; // Player's color
-  // advantageState is not strictly needed here for constructing the payload,
-  // but ChessGame.tsx will use canKnightUseKnightmare before calling this.
+  // knightmareState is not directly used here anymore for validation, 
+  // as getKnightmareSquares (called before this or by this) will handle it.
+  // However, ChessGame.tsx might still pass it if it has it.
+  knightmareState?: KnightmareClientAdvantageState | null | undefined; 
 }
 
 export function handleKnightmareClientMove({
@@ -96,6 +98,10 @@ export function handleKnightmareClientMove({
   from,
   to,
   color,
+  // knightmareState parameter can be removed if ChessGame.tsx stops passing it here,
+  // or kept as optional if other call sites might use it.
+  // For now, let's assume it's not strictly needed for this function's core logic
+  // as the check is done by getKnightmareSquares which ChessGame.tsx calls before this.
 }: HandleKnightmareClientMoveParams): ServerMovePayload | null {
   console.log(`[KnightmareClient] handleKnightmareClientMove: Attempt from ${from} to ${to} for ${color}`);
   const piece = game.get(from as Square);
@@ -106,14 +112,29 @@ export function handleKnightmareClientMove({
     return null;
   }
 
-  // Validate if 'to' is a valid Knightmare destination from 'from'
-  const possibleKnightmareSquares = getKnightmareSquares(game, from as Square, playerChessJsColor);
+  // The primary check for whether Knightmare can be used (based on advantageState.hasUsed)
+  // is now expected to be done by getKnightmareSquares, which ChessGame.tsx calls
+  // to determine possible moves before even attempting to call handleKnightmareClientMove.
+  // So, this function now primarily focuses on validating the move pattern itself.
+  
+  // We still need to get the possible squares to validate the 'to' square.
+  // Pass null for advantageState here, as the actual check for hasUsed is done
+  // when getKnightmareSquares is called from ChessGame.tsx for UI highlighting.
+  // If getKnightmareSquares was called by this function directly for validation only,
+  // then the actual advantageState should be passed.
+  // For this refactor, assuming ChessGame.tsx calls getKnightmareSquares first for UI.
+  const possibleKnightmareSquares = getKnightmareSquares(game, from as Square, playerChessJsColor, null); // Passing null, assuming prior UI check
+  
   if (!possibleKnightmareSquares.includes(to as Square)) {
-    console.warn(`[KnightmareClient] ${to} is not a valid Knightmare destination from ${from}. Possible: ${JSON.stringify(possibleKnightmareSquares)}`);
+    // This condition might be hit if getKnightmareSquares was called with a state that allows use,
+    // but the 'to' square is simply not a valid Knightmare jump.
+    // Or, if getKnightmareSquares was called with null here and it internally defaulted to "can't use".
+    console.warn(`[KnightmareClient] ${to} is not a valid Knightmare destination from ${from}. Possible: ${JSON.stringify(possibleKnightmareSquares)} (Note: if list is empty, Knightmare might have been deemed unusable by getKnightmareSquares if it checked state internally)`);
     return null;
   }
 
-  // If client-side validation passes, prepare the payload for the server
+  // If client-side validation passes (i.e., it's a valid Knightmare jump pattern), prepare the payload.
+  // The server will do the final check on whether the advantage has been used.
   const movePayload: ServerMovePayload = {
     from,
     to,

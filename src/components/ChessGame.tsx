@@ -100,7 +100,7 @@ const [restrictedToPieceType, setRestrictedToPieceType] = useState<string | null
 const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null);
 const [queensDomainState, setQueensDomainState] = useState<QueensDomainClientState | null>(null);
 const [isQueensDomainToggleActive, setIsQueensDomainToggleActive] = useState(false);
-const [knightmareState, setKnightmareState] = useState<{ usedSquares: string[] } | null>(null); // Knightmare state
+const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | null>(null); // Knightmare state
 const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | null>(null);
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
 
@@ -169,30 +169,30 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
   if (myAdvantage?.id === "knightmare") {
     // Initialize the core Knightmare state if it's not already set (e.g., advantage just switched to Knightmare)
     if (!knightmareState) { // Check if knightmareState itself is null
-        setKnightmareState({ usedSquares: [] });
-        console.log('[KM DEBUG ChessGame Fix Attempt 2] useEffect: Knightmare newly active. Initializing knightmareState.');
+        setKnightmareState({ hasUsed: false });
+        console.log('[KM DEBUG ChessGame] useEffect: Knightmare newly active. Initializing knightmareState to { hasUsed: false }.');
         // DO NOT reset knightmareActiveKnight or knightmarePossibleMoves here.
         // They should only be reset if the advantage changes AWAY from knightmare,
         // or by other specific UI interactions (like making a move or deselecting).
     } else {
-        console.log('[KM DEBUG ChessGame Fix Attempt 2] useEffect: Knightmare remains active. Preserving knightmareState.');
+        console.log('[KM DEBUG ChessGame] useEffect: Knightmare remains active. Current state:', knightmareState);
     }
   } else {
       // Knightmare is NOT the current advantage. Clear all its related states.
       if (knightmareState !== null) { // Only update if there's a change to make
-        console.log('[KM DEBUG ChessGame Fix Attempt 2] useEffect: Knightmare no longer active. Resetting knightmareState.');
+        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmareState.');
         setKnightmareState(null);
       }
       if (knightmareActiveKnight !== null) {
-        console.log('[KM DEBUG ChessGame Fix Attempt 2] useEffect: Knightmare no longer active. Resetting knightmareActiveKnight.');
+        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmareActiveKnight.');
         setKnightmareActiveKnight(null);
       }
       if (knightmarePossibleMoves.length > 0) {
-        console.log('[KM DEBUG ChessGame Fix Attempt 2] useEffect: Knightmare no longer active. Resetting knightmarePossibleMoves.');
+        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmarePossibleMoves.');
         setKnightmarePossibleMoves([]);
       }
   }
-  }, [myAdvantage, game, myOpeningSwapState?.hasSwapped, hasUsedRoyalDecree, queensDomainState, isQueensDomainToggleActive, knightmareActiveKnight, knightmarePossibleMoves.length, knightmareState]); 
+  }, [myAdvantage]); // Simplified dependencies, check if knightmareState itself is needed if its internal changes shouldn't re-run this specific block
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -466,17 +466,25 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
       // Knightmare state update from server echo or opponent move
       if (receivedMove.special === 'knightmare') {
         if (isEcho && receivedMove.color === color && receivedMove.from) {
-            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare ECHO received. From: ${receivedMove.from}, To: ${receivedMove.to}. Current knightmareState: ${JSON.stringify(knightmareState)}`);
-            setKnightmareState(prevState => ({
-              usedSquares: [...(prevState?.usedSquares || []), receivedMove.from!], 
-            }));
-            // After setKnightmareState, the actual state isn't available until next render.
-            // console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare state updated. Intended usedSquares: ${JSON.stringify([...(knightmareState?.usedSquares || []), receivedMove.from!])}`);
+            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare ECHO received. From: ${receivedMove.from}, To: ${receivedMove.to}. Current knightmareState before update: ${JSON.stringify(knightmareState)}`);
+            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare ECHO received. From: ${receivedMove.from}, To: ${receivedMove.to}. Current knightmareState before update: ${JSON.stringify(knightmareState)}`);
+            
+            if (receivedMove.updatedAdvantageStates?.knightmare) {
+              setKnightmareState({ hasUsed: receivedMove.updatedAdvantageStates.knightmare.hasUsed });
+              console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare state updated from server echo. New state: { hasUsed: ${receivedMove.updatedAdvantageStates.knightmare.hasUsed} }`);
+            } else {
+              // Fallback for safety, though server should always send it now
+              console.warn("[KM DEBUG ChessGame] handleReceiveMove: Knightmare echo did NOT contain updatedAdvantageStates. Optimistically setting hasUsed to true.");
+              setKnightmareState({ hasUsed: true });
+            }
+
             alert("🐴 Knightmare used!"); 
             setKnightmareActiveKnight(null);
             setKnightmarePossibleMoves([]);
         } else if (!isEcho && receivedMove.color !== color) {
-            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Opponent's Knightmare move received. From: ${receivedMove.from}, To: ${receivedMove.to}. Board update via afterFen: ${receivedMove.afterFen}`);
+            // Opponent's Knightmare move. Client doesn't need to manage opponent's KM state directly.
+            // Board update is handled by general FEN update.
+            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Opponent's Knightmare move received. From: ${receivedMove.from}, To: ${receivedMove.to}. Board update via afterFen: ${receivedMove.afterFen}.`);
         }
       }
     };
@@ -776,17 +784,16 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
       if (!knightmareActiveKnight) { 
           console.log(`[KM DEBUG ChessGame] onSquareClick: No knightmareActiveKnight. Attempting to activate.`);
           if (pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked on player's knight at ${squareClicked}. Checking canKnightUseKnightmare.`);
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Passing knightmareState: ${JSON.stringify(knightmareState)} to canKnightUseKnightmare.`);
-              if (canKnightUseKnightmare(squareClicked, knightmareState)) {
+              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked on player's knight at ${squareClicked}. Checking canKnightUseKnightmare with state: ${JSON.stringify(knightmareState)}.`);
+              if (canKnightUseKnightmare(knightmareState)) {
                   console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for ${squareClicked}. Getting possible moves.`);
-                  const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b');
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for ${squareClicked} returned: ${JSON.stringify(possibleMoves)}`);
+                  const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
+                  console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for ${squareClicked} (with state: ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
                   setKnightmareActiveKnight(squareClicked);
                   setKnightmarePossibleMoves(possibleMoves);
                   console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked}, knightmarePossibleMoves=${JSON.stringify(possibleMoves)}.`);
               } else {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned false for ${squareClicked}.`);
+                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned false for ${squareClicked} with state ${JSON.stringify(knightmareState)}.`);
                   setKnightmareActiveKnight(null);
                   setKnightmarePossibleMoves([]);
               }
@@ -808,10 +815,10 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
               if (squareClicked !== previouslySelectedKnight && pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
                   console.log(`[KM DEBUG ChessGame] onSquareClick: Re-evaluating for newly clicked knight ${squareClicked}.`);
                   console.log(`[KM DEBUG ChessGame] onSquareClick: Passing knightmareState: ${JSON.stringify(knightmareState)} to canKnightUseKnightmare for new selection.`);
-                   if (canKnightUseKnightmare(squareClicked, knightmareState)) {
+                   if (canKnightUseKnightmare(knightmareState)) {
                       console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for new knight ${squareClicked}.`);
-                      const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b');
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for new knight ${squareClicked} returned: ${JSON.stringify(possibleMoves)}`);
+                      const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
+                      console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for new knight ${squareClicked} (with state ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
                       setKnightmareActiveKnight(squareClicked);
                       setKnightmarePossibleMoves(possibleMoves);
                       console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked} for new selection.`);
@@ -1354,23 +1361,29 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
             return null;
         }
 
-        if (!canKnightUseKnightmare(from, knightmareState)) { 
-            alert("This knight has already used its Knightmare move or client state is out of sync. Please try again.");
+        if (!canKnightUseKnightmare(knightmareState)) { 
+            alert("Knightmare has already been used or client state is out of sync. Please try again.");
             setKnightmareActiveKnight(null); 
             setKnightmarePossibleMoves([]);
             return null;
         }
-        console.log(`[KM DEBUG ChessGame] makeMove: Calling handleKnightmareClientMove with game, from=${from}, to=${to}, color=${color}`);
+        console.log(`[KM DEBUG ChessGame] makeMove: Calling handleKnightmareClientMove with game, from=${from}, to=${to}, color=${color}, state=${JSON.stringify(knightmareState)}`);
         const knightmarePayload = handleKnightmareClientMove({
           game, 
           from,
           to,
-          color: color, // myColor was changed to color
+          color: color, 
+          knightmareState, // Pass the state, though handleKnightmareClientMove might not use its internals directly
         });
         console.log(`[KM DEBUG ChessGame] makeMove: handleKnightmareClientMove returned: ${JSON.stringify(knightmarePayload)}`);
 
         if (knightmarePayload) {
           fenSnapshotBeforeMove.current = game.fen(); 
+          
+          // Optimistic Update for Knightmare (simplified)
+          setKnightmareState({ hasUsed: true });
+          console.log("[KM DEBUG ChessGame] makeMove: Optimistically updated Knightmare state to hasUsed: true.");
+          
           socket.emit("sendMove", { roomId, move: knightmarePayload });
           
           setKnightmareActiveKnight(null);
