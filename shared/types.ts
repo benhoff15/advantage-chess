@@ -43,6 +43,7 @@ export interface PlayerAdvantageStates {
     isActive: boolean;
     hasUsed: boolean;
   };
+  knightmare?: { usedSquares: string[]; };
   // Add other advantage states here as needed
 }
 
