@@ -40,7 +40,11 @@ import {
   handlePawnAmbushClient,
   applyPawnAmbushOpponentMove,
 } from "../logic/advantages/pawnAmbush";
+import { showRestlessKingNotice } from "../logic/advantages/restlessKing"; // Added import
 import { Move } from "chess.js";
+
+// Define the type for the chess.js Move object if not already available globally
+// type ChessJsMove = ReturnType<Chess['move']>; // This is a more precise way if Chess['move'] is well-typed
 
 export default function ChessGame() {
   const { roomId } = useParams(); //This gets /game/:roomId
@@ -656,6 +660,21 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
     };
     socket.on('sacrificialBlessingFailed', handleSacrificialBlessingFailed);
 
+    const handleRestlessKingActivated = ({ forColor, remaining }: { forColor: 'white' | 'black', remaining: number }) => {
+      // 'color' is the state variable holding the current client's color
+      // 'forColor' is the color of the player for whom the "cannot check" rule applies (i.e., the opponent of the king-mover)
+      // The toast "Restless King activated. Your opponent cannot check you." is for the player who MOVED their king.
+      // The toast "You cannot check this turn due to Restless King." is for the player who is NOW RESTRICTED.
+
+      // So, if forColor === color, it means THIS client is the one being restricted. (isYou = false for showRestlessKingNotice)
+      // If forColor !== color, it means THIS client's OPPONENT is restricted (meaning THIS client activated it). (isYou = true for showRestlessKingNotice)
+      console.log(`[ChessGame event] restlessKingActivated: forColor=${forColor}, remaining=${remaining}, myColor=${color}`);
+      if (color) { // Ensure client's color is known
+        showRestlessKingNotice(forColor !== color, remaining);
+      }
+    };
+    socket.on("restlessKingActivated", handleRestlessKingActivated);
+
     const handleRoyalDecreeApplied = ({ pieceType, restrictedPlayerColor }: { pieceType: string, restrictedPlayerColor: "white" | "black" }) => {
       if (color === restrictedPlayerColor) { 
         console.log(`[Royal Decree Client] Received royalDecreeApplied. Must move: ${pieceType}. My color: ${color}`);
@@ -704,6 +723,7 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       socket.off('sacrificialBlessingTriggered', handleSacrificialBlessingTriggered);
       socket.off('boardUpdateFromBlessing', handleBoardUpdateFromBlessing);
       socket.off('sacrificialBlessingFailed', handleSacrificialBlessingFailed);
+      socket.off("restlessKingActivated", handleRestlessKingActivated); // Added cleanup
     };
   }, [
     roomId,
@@ -825,6 +845,17 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
   };
 
   const makeMove = (from: string, to: string) => {
+    // Helper function to check and emit Restless King trigger
+    const checkAndEmitRestlessKing = (chessJsMove: Move | null | undefined, currentRoomId: string | undefined) => {
+      if (chessJsMove &&
+          myAdvantage?.id === "restless_king" &&
+          chessJsMove.piece === 'k' &&
+          !(chessJsMove.flags.includes('k') || chessJsMove.flags.includes('q'))) {
+        console.log("[ChessGame] Emitting restlessKingTriggered client event for king move:", chessJsMove);
+        socket.emit("restlessKingTriggered", { roomId: currentRoomId });
+      }
+    };
+
     if (isSacrificialBlessingActive) {
       alert("Sacrificial Blessing is active. Please click a piece then an empty square. Drag-and-drop is disabled for blessing.");
       return null; 
@@ -902,6 +933,9 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       if (actualSecondMove) {
         setFen(gameForSecondLcMove.fen());
         game.load(gameForSecondLcMove.fen()); // Update main game instance
+
+        // Check for Restless King trigger before emitting LC second move
+        checkAndEmitRestlessKing(actualSecondMove, roomId);
 
         socket.emit("sendMove", {
           roomId,
@@ -1045,6 +1079,12 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
 
       if (royalEscortResult.moveData) {
         setFen(game.fen());
+        // For Royal Escort, royalEscortResult.moveData is ServerMovePayload.
+        // We'd need the original chess.js move object if the king was the primary piece moved by player.
+        // Assuming the server-side "restlessKingTriggered" handler will correctly validate if this was a king move.
+        // Client *could* try to reconstruct, e.g. by checking game.get(royalEscortResult.moveData.to).type but flags are missing.
+        // For now, we rely on server for RK activation if this was a king move.
+        // If royalEscortResult.moveData had the original chess.js move object, we'd call checkAndEmitRestlessKing here.
         socket.emit("sendMove", { roomId, move: royalEscortResult.moveData });
 
         setRoyalEscortState((prevState) => ({
@@ -1126,6 +1166,8 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       }
 
       if (castleMasterResult.moveData) {
+        // Castle Master moves are always castling, so checkAndEmitRestlessKing would not fire.
+        // No explicit call to checkAndEmitRestlessKing needed here as the conditions (not castling) wouldn't be met.
         socket.emit("sendMove", { roomId, move: castleMasterResult.moveData });
         // Game over checks after emitting Castle Master move
         if (game.isCheckmate()) {
@@ -1185,6 +1227,8 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       if (focusedBishopResult.advantageUsedAttempt) {
         hasUsedFocusedBishop.current = true;
         if (focusedBishopResult.moveData) {
+          // Focused Bishop moves a bishop, not a king.
+          // No explicit call to checkAndEmitRestlessKing needed.
           socket.emit("sendMove", {
             roomId,
             move: focusedBishopResult.moveData,
@@ -1265,6 +1309,8 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
           "[ChessGame] makeMove: Emitting Corner Blitz move to server:",
           cornerBlitzResult.moveData,
         );
+        // Corner Blitz moves a rook, not a king.
+        // No explicit call to checkAndEmitRestlessKing needed.
         socket.emit("sendMove", { roomId, move: cornerBlitzResult.moveData });
 
         // Check for game over states immediately after this client-side validated special move
@@ -1365,6 +1411,8 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
               serverPayload.promotion = 'q'; // Ambush promotes to queen
               
               // Emit this special move and return, bypassing generic emit further down.
+              // The original move was a pawn move (standardMoveAttempt), so Restless King condition (move.piece === 'k') won't be met.
+              checkAndEmitRestlessKing(standardMoveAttempt, roomId); // This will correctly not fire for pawn moves
               socket.emit("sendMove", { roomId, move: serverPayload });
               // Game Over Checks
               if (game.isCheckmate()) {
@@ -1426,6 +1474,10 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
         }
       }
       
+      // Call for standard moves or other advantages that fall through (e.g. Pawn Rush that didn't ambush)
+      // 'move' here should be the chess.js Move object
+      checkAndEmitRestlessKing(move, roomId); 
+
       console.log("[ChessGame] makeMove: Emitting move to server (standard or other advantage):", movePayloadToSend);
       socket.emit("sendMove", { roomId, move: movePayloadToSend });
 

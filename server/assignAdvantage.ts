@@ -23,9 +23,10 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "sacrificial_blessing",
-    name: "Sacrificial Blessing",
-    description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.",
+  {
+    id: "restless_king",
+    name: "Restless King",
+    description: "If your king moves, your opponent cannot give check on their next turn.",
     rarity: "common"
   },
   { 

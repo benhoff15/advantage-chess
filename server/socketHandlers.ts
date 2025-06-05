@@ -23,6 +23,15 @@ import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSac
 
 console.log("setupSocketHandlers loaded");
 
+// Helper function to determine if a move is castling
+function isCastlingMove(move: Move, piece: { type: string, color: 'w' | 'b' }): boolean {
+  if (piece.type !== 'k') {
+    return false;
+  }
+  // chess.js move flags 'k' (kingside castling) and 'q' (queenside castling)
+  return move.flags.includes('k') || move.flags.includes('q');
+}
+
 type PlayerStats = {
   gamesPlayed: number;
   wins: number;
@@ -60,6 +69,8 @@ export type RoomState = {
   sacrificialBlessingPending?: SacrificialBlessingPendingState | null;
   whiteHasUsedSacrificialBlessing?: boolean;
   blackHasUsedSacrificialBlessing?: boolean;
+  restlessKingCheckBlock?: { white: boolean; black: boolean };
+  restlessKingUsesLeft?: { white: number; black: number };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -134,6 +145,8 @@ export function setupSocketHandlers(io: Server) {
           sacrificialBlessingPending: null,
           whiteHasUsedSacrificialBlessing: false,
           blackHasUsedSacrificialBlessing: false,
+          restlessKingCheckBlock: { white: false, black: false },
+          restlessKingUsesLeft: { white: 3, black: 3 },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
@@ -157,6 +170,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.sacrificialBlessingPending === undefined) room.sacrificialBlessingPending = null;
         if (room.whiteHasUsedSacrificialBlessing === undefined) room.whiteHasUsedSacrificialBlessing = false;
         if (room.blackHasUsedSacrificialBlessing === undefined) room.blackHasUsedSacrificialBlessing = false;
+        if (room.restlessKingCheckBlock === undefined) room.restlessKingCheckBlock = { white: false, black: false };
+        if (room.restlessKingUsesLeft === undefined) room.restlessKingUsesLeft = { white: 3, black: 3 };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -342,6 +357,32 @@ export function setupSocketHandlers(io: Server) {
           }
         }
         // --- End Royal Decree Restriction Check ---
+
+        // ---- Restless King Check PREVENTION Logic ----
+        if (senderColor && room.restlessKingCheckBlock?.[senderColor] === true) {
+          // Temporarily try the move to see if it results in a check
+          const testGame = new Chess(room.fen!); // Use current FEN
+          const testMove = testGame.move({
+            from: receivedMove.from,
+            to: receivedMove.to,
+            promotion: receivedMove.promotion as any // Use 'any' for chess.js compatibility
+          });
+
+          if (testMove && testGame.inCheck()) { // inCheck() checks if the *current* player to move is in check
+                                              // After a move, turn switches, so this checks if opponent was put in check.
+            console.warn(`[Restless King] Player ${senderColor} (${senderId}) prevented from checking opponent due to Restless King in room ${roomId}. Move: ${receivedMove.from}-${receivedMove.to}`);
+            socket.emit("invalidMove", {
+              message: "Restless King prevents you from giving check this turn.",
+              move: clientMoveData // clientMoveData is the original move object from the client
+            });
+            return; // Prevent further processing of this move
+          }
+          // If the move does not result in a check, the block is lifted for this turn.
+          // No, the block should persist for any move that turn. The prompt implies the block is for *giving* check.
+          // The wording "Restless King prevents you from giving check this turn" means ANY move that would give check is illegal.
+          // The block is only lifted *after* a successful non-checking move is made (handled in post-move logic).
+        }
+        // ---- End Restless King Check PREVENTION Logic ----
 
         // Fetch advantage states for the current player
         let currentPlayerAdvantageState_FB: FocusedBishopAdvantageState | undefined;
@@ -683,6 +724,25 @@ export function setupSocketHandlers(io: Server) {
             // NOT deflected. Commit everything.
             // serverGame at this point has the FEN of fenAfterPotentialAmbush
             room.fen = fenAfterPotentialAmbush; // Commit FEN (post-move, post-ambush)
+
+            // ---- Restless King Advantage Trigger Logic ----
+            if (moveResult.piece === 'k' && senderColor && opponentColor && room.fen && room.restlessKingCheckBlock && room.restlessKingUsesLeft) {
+              const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+              if (playerAdvantage?.id === 'restless_king' && 
+                  !isCastlingMove(moveResult, { type: 'k', color: senderColor[0] as 'w' | 'b' }) &&
+                  room.restlessKingUsesLeft[senderColor] > 0
+              ) {
+                room.restlessKingCheckBlock[opponentColor] = true;
+                room.restlessKingUsesLeft[senderColor]!--; // Non-null assertion as we checked > 0
+
+                console.log(`[Restless King] Activated by ${senderColor} against ${opponentColor} in room ${roomId}. Uses left: ${room.restlessKingUsesLeft[senderColor]}`);
+                io.to(roomId).emit("restlessKingActivated", { 
+                  forColor: opponentColor, 
+                  remaining: room.restlessKingUsesLeft[senderColor] 
+                });
+              }
+            }
+            // ---- End Restless King Advantage Trigger Logic ----
             
             // ---- Sacrificial Blessing Trigger Check ----
             // serverGame is already updated with the move that might include ambush.
@@ -743,6 +803,14 @@ export function setupSocketHandlers(io: Server) {
               room.royalDecreeRestriction = null;
             }
             // ---- End Clear Royal Decree ----
+
+            // ---- Restless King Block RESET Logic ----
+            // If a player successfully made a move and they were under the Restless King check block, lift it.
+            if (senderColor && room.restlessKingCheckBlock?.[senderColor] === true) {
+              room.restlessKingCheckBlock[senderColor] = false;
+              console.log(`[Restless King] Check block lifted for ${senderColor} in room ${roomId} after successful move.`);
+            }
+            // ---- End Restless King Block RESET Logic ----
 
             // ---- Start of Silent Shield currentSquare update ---- (Keep as is, but uses the final serverGame state)
             let updatedShieldedPieceForEmit: ShieldedPieceInfo | null = null;
