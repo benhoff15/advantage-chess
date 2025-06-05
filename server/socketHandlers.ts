@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState } from "../shared/types";
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
@@ -19,6 +19,7 @@ import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
 import { validateLightningCaptureServerMove } from './logic/advantages/lightningCapture';
 import { LightningCaptureState, PawnAmbushState } from "../shared/types"; // Added PawnAmbushState
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
+import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
 
 console.log("setupSocketHandlers loaded");
 
@@ -30,7 +31,7 @@ type PlayerStats = {
   elo: number;
 };
 
-type RoomState = {
+export type RoomState = {
   white?: string;
   black?: string;
   whiteAdvantage?: Advantage;
@@ -56,6 +57,9 @@ type RoomState = {
   royalDecreeRestriction?: { targetColor: "white" | "black", pieceType: string } | null;
   whiteHasUsedRoyalDecree?: boolean;
   blackHasUsedRoyalDecree?: boolean;
+  sacrificialBlessingPending?: SacrificialBlessingPendingState | null;
+  whiteHasUsedSacrificialBlessing?: boolean;
+  blackHasUsedSacrificialBlessing?: boolean;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -127,6 +131,9 @@ export function setupSocketHandlers(io: Server) {
           royalDecreeRestriction: null,
           whiteHasUsedRoyalDecree: false,
           blackHasUsedRoyalDecree: false,
+          sacrificialBlessingPending: null,
+          whiteHasUsedSacrificialBlessing: false,
+          blackHasUsedSacrificialBlessing: false,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
@@ -147,6 +154,9 @@ export function setupSocketHandlers(io: Server) {
         if (room.royalDecreeRestriction === undefined) room.royalDecreeRestriction = null;
         if (room.whiteHasUsedRoyalDecree === undefined) room.whiteHasUsedRoyalDecree = false;
         if (room.blackHasUsedRoyalDecree === undefined) room.blackHasUsedRoyalDecree = false;
+        if (room.sacrificialBlessingPending === undefined) room.sacrificialBlessingPending = null;
+        if (room.whiteHasUsedSacrificialBlessing === undefined) room.whiteHasUsedSacrificialBlessing = false;
+        if (room.blackHasUsedSacrificialBlessing === undefined) room.blackHasUsedSacrificialBlessing = false;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -671,8 +681,49 @@ export function setupSocketHandlers(io: Server) {
             socket.emit("moveDeflected", { move: clientMoveData }); 
           } else {
             // NOT deflected. Commit everything.
+            // serverGame at this point has the FEN of fenAfterPotentialAmbush
             room.fen = fenAfterPotentialAmbush; // Commit FEN (post-move, post-ambush)
             
+            // ---- Sacrificial Blessing Trigger Check ----
+            // serverGame is already updated with the move that might include ambush.
+            // moveResult is the original move object.
+            if (moveResult.captured && senderColor && room && room.fen) { // Ensure room and room.fen are defined
+              const capturedPieceType = moveResult.captured;
+              // moveResult.color is the color of the piece *that moved* (the capturing piece)
+              const capturedPieceOriginalColor = moveResult.color === 'w' ? 'b' : 'w'; 
+            
+              console.log(`[sendMove] Capture occurred: ${capturedPieceType} of color ${capturedPieceOriginalColor}. Checking Sacrificial Blessing.`);
+            
+              // Use a fresh Chess instance with the latest committed FEN for checks,
+              // as serverGame might have been modified further by other logic not relevant to blessing trigger.
+              const blessingCheckGame = new Chess(room.fen); 
+
+              if (canTriggerSacrificialBlessing(blessingCheckGame, capturedPieceOriginalColor, capturedPieceType, room)) {
+                const availablePieces = getPlaceableKnightsAndBishops(blessingCheckGame, capturedPieceOriginalColor);
+                if (availablePieces.length > 0) {
+                  const playerColorString = capturedPieceOriginalColor === 'w' ? 'white' : 'black';
+                  room.sacrificialBlessingPending = { color: playerColorString, availablePieces };
+            
+                  let targetPlayerSocketId: string | undefined;
+                  if (capturedPieceOriginalColor === 'w' && room.white) {
+                    targetPlayerSocketId = room.white;
+                  } else if (capturedPieceOriginalColor === 'b' && room.black) {
+                    targetPlayerSocketId = room.black;
+                  }
+            
+                  if (targetPlayerSocketId) {
+                    io.to(targetPlayerSocketId).emit('sacrificialBlessingTriggered', { availablePieces, fenAfterCapture: room.fen });
+                    console.log(`[Sacrificial Blessing] Triggered for ${playerColorString} (${targetPlayerSocketId}). Available pieces:`, availablePieces, `FEN: ${room.fen}`);
+                  }
+                } else {
+                   console.log(`[Sacrificial Blessing] Trigger conditions met for ${capturedPieceOriginalColor}, but no placeable knights or bishops found.`);
+                }
+              } else {
+                   console.log(`[Sacrificial Blessing] Conditions not met for ${capturedPieceOriginalColor} with captured ${capturedPieceType}.`);
+              }
+            }
+            // ---- End SacrificialBlessing Trigger Check ----
+
             if (ambushAppliedThisTurn && pawnAmbushFinalState) {
               if (senderColor === 'white') {
                 room.whitePawnAmbushState = pawnAmbushFinalState;
@@ -946,6 +997,53 @@ export function setupSocketHandlers(io: Server) {
         io.to(opponentSocketId).emit("royalDecreeApplied", { pieceType, restrictedPlayerColor: opponentColor });
       }
       socket.emit("royalDecreeConfirmed");
+    });
+
+    socket.on("placeSacrificialBlessingPiece", ({ roomId, pieceSquare, toSquare }: { roomId: string; pieceSquare: string; toSquare: string }) => {
+      const room = rooms[roomId];
+      if (!room || !room.fen || !room.sacrificialBlessingPending) {
+        socket.emit("sacrificialBlessingFailed", { message: "Invalid room state or blessing not pending." });
+        return;
+      }
+
+      const playerSocketId = socket.id;
+      const pendingColor = room.sacrificialBlessingPending.color; // 'white' or 'black'
+      const playerColorChar = pendingColor === 'white' ? 'w' : 'b';
+
+      if ((pendingColor === 'white' && playerSocketId !== room.white) || (pendingColor === 'black' && playerSocketId !== room.black)) {
+        socket.emit("sacrificialBlessingFailed", { message: "Not your turn to use sacrificial blessing or not authorized." });
+        return;
+      }
+
+      const gameInstance = new Chess(room.fen); // Create a new game instance for this operation
+
+      const placementResult = handleSacrificialBlessingPlacement(
+        gameInstance,
+        playerColorChar,
+        pieceSquare as any, // chess.js Square type
+        toSquare as any     // chess.js Square type
+      );
+
+      if (placementResult.success && placementResult.newFen) {
+        room.fen = placementResult.newFen; // Update the authoritative FEN
+
+        // Mark advantage as used
+        if (pendingColor === 'white') {
+          room.whiteHasUsedSacrificialBlessing = true;
+        } else {
+          room.blackHasUsedSacrificialBlessing = true;
+        }
+        
+        room.sacrificialBlessingPending = null; // Clear pending state
+
+        // Broadcast the board update. IMPORTANT: This is not a regular move, so turn does not change.
+        // The client needs to know the FEN updated without a turn change.
+        io.to(roomId).emit("boardUpdateFromBlessing", { newFen: room.fen, playerWhoUsedBlessing: pendingColor });
+        
+        console.log(`[Sacrificial Blessing] Player ${pendingColor} used Sacrificial Blessing. Piece from ${pieceSquare} to ${toSquare}. New FEN: ${room.fen}`);
+      } else {
+        socket.emit("sacrificialBlessingFailed", { message: placementResult.error || "Failed to place piece." });
+      }
     });
 
     socket.on("disconnect", () => {

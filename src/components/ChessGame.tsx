@@ -5,6 +5,7 @@ import { Chessboard } from "react-chessboard";
 import { Square } from "chess.js";
 import { socket } from "../socket";
 import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState } from "../../shared/types"; // Import ServerMovePayload
+import { useSacrificialBlessingStore, SacrificialBlessingPiece } from "../logic/advantages/sacrificialBlessing";
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
 import {
   handlePawnRushClient,
@@ -87,6 +88,25 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
 const [hasUsedRoyalDecree, setHasUsedRoyalDecree] = useState(false);
 const [restrictedToPieceType, setRestrictedToPieceType] = useState<string | null>(null);
 const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null);
+
+  const {
+    isSacrificialBlessingActive,
+    availablePieces: availablePiecesForBlessing,
+    selectedPiece: selectedPieceForBlessing,
+    activate: activateSacrificialBlessing,
+    selectPiece: selectBlessingPiece,
+    deselectPiece: deselectBlessingPiece,
+    placePiece: placeBlessingPieceClient,
+    reset: resetSacrificialBlessingState,
+  } = useSacrificialBlessingStore();
+  const [hasUsedMySacrificialBlessing, setHasUsedMySacrificialBlessing] = useState(false);
+
+  useEffect(() => {
+    if (myAdvantage?.id !== 'sacrificial_blessing') {
+      setHasUsedMySacrificialBlessing(false); // Reset usage if advantage changes
+      resetSacrificialBlessingState();
+    }
+  }, [myAdvantage, resetSacrificialBlessingState]);
 
   useEffect(() => {
     if (myAdvantage?.id === "royal_escort") {
@@ -564,13 +584,54 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
     const handleOpeningSwapFailed = ({ message }: { message: string }) => {
       console.warn(`[ChessGame event] openingSwapFailed: ${message}`);
       alert(`Opening Swap Failed: ${message}`);
-      // Reset selection state to allow player to try again or make a different choice
       setOpeningSwapSelection(null);
-      // Keep the prompt open if it was already open, unless the failure implies it should be closed
-      // For example, if failure is "game already started", then prompt should close.
-      // For now, just resetting selection is fine. The prompt visibility is also tied to game.history().length.
     };
     socket.on("openingSwapFailed", handleOpeningSwapFailed);
+
+    const handleSacrificialBlessingTriggered = ({ availablePieces, fenAfterCapture }: { availablePieces: SacrificialBlessingPiece[], fenAfterCapture: string }) => {
+      if (myAdvantage?.id === 'sacrificial_blessing' && !hasUsedMySacrificialBlessing && color) {
+        console.log('[ChessGame] sacrificialBlessingTriggered. Loading FEN for blessing:', fenAfterCapture, 'Available Pieces:', availablePieces);
+        
+        // Load this specific FEN to ensure game object is perfectly synced for UI activation
+        game.load(fenAfterCapture); 
+        setFen(fenAfterCapture); // Update main fen state as well
+
+        activateSacrificialBlessing(availablePieces);
+        alert("Sacrificial Blessing Triggered! Select one of your highlighted Knights or Bishops, then an empty square to move it to.");
+      }
+    };
+    socket.on('sacrificialBlessingTriggered', handleSacrificialBlessingTriggered);
+
+    const handleBoardUpdateFromBlessing = ({ newFen, playerWhoUsedBlessing }: { newFen: string, playerWhoUsedBlessing: 'white' | 'black' }) => {
+      console.log(`[ChessGame] boardUpdateFromBlessing received. New FEN: ${newFen}, Used by: ${playerWhoUsedBlessing}`);
+      game.load(newFen);
+      setFen(newFen);
+      resetSacrificialBlessingState();
+      if (playerWhoUsedBlessing === color) {
+        setHasUsedMySacrificialBlessing(true);
+      }
+      // Standard game over checks
+      if (game.isCheckmate()) {
+        const winner = game.turn() === "w" ? "black" : "white";
+        setGameOverMessage(`${winner} wins by checkmate`);
+      } else if (game.isDraw()) {
+        setGameOverMessage("Draw");
+      } else if (game.isStalemate()) {
+        setGameOverMessage("Draw by Stalemate");
+      } else if (game.isThreefoldRepetition()) {
+        setGameOverMessage("Draw by Threefold Repetition");
+      } else if (game.isInsufficientMaterial()) {
+        setGameOverMessage("Draw by Insufficient Material");
+      }
+    };
+    socket.on('boardUpdateFromBlessing', handleBoardUpdateFromBlessing);
+
+    const handleSacrificialBlessingFailed = ({ message }: { message: string }) => {
+      console.warn('[ChessGame] sacrificialBlessingFailed received:', message);
+      alert(`Sacrificial Blessing Failed: ${message}`);
+      resetSacrificialBlessingState();
+    };
+    socket.on('sacrificialBlessingFailed', handleSacrificialBlessingFailed);
 
     const handleRoyalDecreeApplied = ({ pieceType, restrictedPlayerColor }: { pieceType: string, restrictedPlayerColor: "white" | "black" }) => {
       if (color === restrictedPlayerColor) { 
@@ -617,6 +678,9 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
       socket.off("openingSwapFailed", handleOpeningSwapFailed);
       socket.off("royalDecreeApplied", handleRoyalDecreeApplied);
       socket.off("royalDecreeLifted", handleRoyalDecreeLifted);
+      socket.off('sacrificialBlessingTriggered', handleSacrificialBlessingTriggered);
+      socket.off('boardUpdateFromBlessing', handleBoardUpdateFromBlessing);
+      socket.off('sacrificialBlessingFailed', handleSacrificialBlessingFailed);
     };
   }, [
     roomId,
@@ -626,7 +690,12 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
     myShieldedPieceInfo,
     fenSnapshotBeforeMove,
     myOpeningSwapState,
-    // color is crucial here for the new handlers
+    activateSacrificialBlessing, 
+    resetSacrificialBlessingState, 
+    hasUsedMySacrificialBlessing,
+    setFen, 
+    setGameOverMessage,
+    // Removed the previous comment about 'color is crucial' as it's now explicitly listed.
   ]); 
   // Note: `game` (useState object) and `fenSnapshotBeforeMove` (ref object) are stable.
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
@@ -643,65 +712,82 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
 
   // promptSecondMove function was here and has been removed.
 
-  // Add this function within the ChessGame component
+  const onSquareClick = (squareClicked: Square) => {
+    if (isSacrificialBlessingActive) {
+      if (!selectedPieceForBlessing) {
+        const pieceDetailsOnSquare = game.get(squareClicked);
+        const isPieceEligibleForBlessing = availablePiecesForBlessing.find(p => p.square === squareClicked);
+        if (isPieceEligibleForBlessing && pieceDetailsOnSquare && pieceDetailsOnSquare.color === color?.[0]) {
+          selectBlessingPiece(isPieceEligibleForBlessing);
+        }
+      } else {
+        if (squareClicked === selectedPieceForBlessing.square) {
+          deselectBlessingPiece();
+        } else {
+          const targetSquareInfo = game.get(squareClicked);
+          // console.log(`[SB Debug] onSquareClick: Target square ${squareClicked} clicked. Piece info:`, targetSquareInfo, "Is it null?", targetSquareInfo === null); // Removed
+          if (targetSquareInfo === null) { // Target square must be empty
+            if (roomId) {
+              placeBlessingPieceClient(roomId, squareClicked);
+            }
+          } else {
+            alert("Invalid target: Square is not empty. Click your selected piece again to deselect it, or choose an empty (yellow) square.");
+          }
+        }
+      }
+      return; 
+    }
+
+    if (myAdvantage?.id === "opening_swap" && showOpeningSwapPrompt && !myOpeningSwapState?.hasSwapped && color) {
+      handleSquareClickForSwap(squareClicked as string); 
+    }
+  };
+  
   const handleSquareClickForSwap = (square: string) => {
     if (myAdvantage?.id === "opening_swap" && showOpeningSwapPrompt && !myOpeningSwapState?.hasSwapped && color) {
-      const piece = game.get(square as Square); // react-chessboard gives 'string', chess.js needs 'Square'
+      const piece = game.get(square as Square); 
       const playerRank = color === 'white' ? '1' : '8';
 
-      // Check if the square is part of the board, otherwise piece will be null.
-      // Also, ensure there's a piece on the square.
       if (!piece) {
-        // If a piece was already selected, clicking an empty square could perhaps cancel selection.
-        // For now, only valid pieces can be interacted with for swap.
         if (openingSwapSelection) {
           alert("Opening Swap: Please select one of your non-king pieces on your back rank to swap with " + openingSwapSelection + " or click " + openingSwapSelection + " again to deselect.");
         } else {
           alert("Opening Swap: Please select one of your non-king pieces on your back rank.");
         }
-        return; // Clicked on an empty square or invalid square.
+        return; 
       }
 
       if (piece.color !== color[0] || square[1] !== playerRank || piece.type === 'k') {
         alert("Opening Swap: Please select a non-king piece on your back rank.");
-        return; // Invalid selection for swap
+        return; 
       }
 
       if (!openingSwapSelection) {
         setOpeningSwapSelection(square);
-        // Consider adding customSquareStyles here to highlight the selected square
         alert(`Selected ${square}. Now select the second piece to swap with, or click ${square} again to deselect.`);
       } else {
-        if (openingSwapSelection === square) { // Clicked the same piece again
-          setOpeningSwapSelection(null); // Deselect
-          // Clear highlighting if it was added
+        if (openingSwapSelection === square) { 
+          setOpeningSwapSelection(null); 
           alert("Swap selection cancelled.");
         } else {
-          // Second piece selected
           console.log(`[Opening Swap] Emitting openingSwap event for ${openingSwapSelection} and ${square}`);
           socket.emit("openingSwap", { roomId, from: openingSwapSelection, to: square });
-          // UI will be fully hidden on openingSwapSuccess or if player makes a regular move / skips
-          setOpeningSwapSelection(null); // Reset selection
-          // setShowOpeningSwapPrompt(false); // Hide prompt after attempting, server will confirm status
+          setOpeningSwapSelection(null); 
         }
       }
-    } else {
-      // If swap is not active, clicks should ideally be ignored by this handler
-      // or fall through to other click logic if any (not the case here for now).
-      // This ensures that regular drag-and-drop for moves is not affected.
     }
   };
 
   const makeMove = (from: string, to: string) => {
+    if (isSacrificialBlessingActive) {
+      alert("Sacrificial Blessing is active. Please click a piece then an empty square. Drag-and-drop is disabled for blessing.");
+      return null; 
+    }
     if (!color) return null;
     const myColor = color;
 
-    // If opening swap was available but a regular move is made, hide the prompt.
     if (showOpeningSwapPrompt && game.history().length === 0) {
       setShowOpeningSwapPrompt(false);
-      // Optionally, here you could also set myOpeningSwapState.hasSwapped to true
-      // if making any move means forfeiting the swap.
-      // Or let server handle this if player tries to swap after moving.
     }
 
     const turn = game.turn();
@@ -1375,6 +1461,9 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
           <p>
             Your Advantage: <strong>{myAdvantage.name}</strong>
           </p>
+          {myAdvantage.id === 'sacrificial_blessing' && (
+            <p><em>{hasUsedMySacrificialBlessing ? "Sacrificial Blessing has been used." : "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn."}</em></p>
+          )}
           {myAdvantage.id === "lightning_capture" &&
             !lightningCaptureState.used && (
               <>
@@ -1471,12 +1560,25 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
 
       {royalDecreeMessage && <p style={{ color: 'orange', fontWeight: 'bold', marginTop: '5px', marginBottom: '5px' }}>{royalDecreeMessage}</p>}
 
+      {isSacrificialBlessingActive && (
+        <div style={{ padding: '10px', margin: '10px 0', background: '#e0efff', border: '1px solid #b0cfff', borderRadius: '4px', textAlign: 'center' }}>
+          <p style={{ margin: 0, fontWeight: 'bold' }}>Sacrificial Blessing Active!</p>
+          {!selectedPieceForBlessing
+            ? <p style={{ margin: '5px 0 0 0' }}>Select one of your highlighted Knights or Bishops to move.</p>
+            : <p style={{ margin: '5px 0 0 0' }}>Selected {selectedPieceForBlessing.type.toUpperCase()} on {selectedPieceForBlessing.square}. Click an empty (yellow) square to place it.</p>}
+          <button onClick={() => resetSacrificialBlessingState()} style={{ marginTop: '10px', padding: '5px 10px' }}>Cancel Blessing</button>
+        </div>
+      )}
+
       <div style={{ position: "relative" }}>
         <Chessboard
           position={fen}
-          onSquareClick={handleSquareClickForSwap} // Add this prop
+          onSquareClick={onSquareClick}
           onPieceDrop={(from, to) => {
-            // Block interaction while second move is being processed for LC
+            if (isSacrificialBlessingActive) { 
+                alert("Sacrificial Blessing is active. Please click a piece then an empty square. Drag-and-drop is disabled for blessing.");
+                return false; 
+            }
             if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
                makeMove(from, to); 
                return true; 
@@ -1491,35 +1593,51 @@ const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null
           boardOrientation={color === "black" ? "black" : "white"}
           customSquareStyles={(() => {
             let styles: { [key: string]: React.CSSProperties } = {};
+            
             if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
-              styles = {
-                ...lcPossibleSecondMoves.reduce(
-                  (acc, sq) => ({
-                    ...acc,
-                    [sq]: { background: "rgba(255, 255, 0, 0.4)" },
-                  }),
-                  {},
-                ),
-                [lcFirstMoveDetails.to]: {
-                  background: "rgba(0, 255, 0, 0.4)",
-                },
-              };
+              lcPossibleSecondMoves.forEach(sq => {
+                styles[sq] = { ...styles[sq], background: "rgba(255, 255, 0, 0.4)" };
+              });
+              styles[lcFirstMoveDetails.to] = { ...styles[lcFirstMoveDetails.to], background: "rgba(0, 255, 0, 0.4)" };
             } else if (openingSwapSelection) {
-              styles[openingSwapSelection] = { background: "rgba(255, 220, 0, 0.6)" };
+              styles[openingSwapSelection] = { ...(styles[openingSwapSelection] || {}), background: "rgba(255, 220, 0, 0.6)" };
             }
-
+            
             if (restrictedToPieceType && color && game.turn() === color[0]) {
-              // Iterate over all squares to find pieces to dim
               const squares = game.board().flat().map(p => p?.square).filter(Boolean);
               for (const square of squares) {
-                if (square) { // Ensure square is not null
+                if (square) { 
                     const pieceOnSquare = game.get(square as Square);
                     if (pieceOnSquare && pieceOnSquare.color === color[0]) {
                         if (pieceOnSquare.type !== restrictedToPieceType) {
-                            styles[square] = { ...styles[square], opacity: 0.5 };
+                            styles[square] = { ...(styles[square] || {}), opacity: 0.5 };
                         }
                     }
                 }
+              }
+            }
+
+            if (isSacrificialBlessingActive) {
+              // console.log('[SB Debug] customSquareStyles: Blessing active, piece selected. Game FEN:', game.fen()); // Removed
+              availablePiecesForBlessing.forEach(p => {
+                styles[p.square] = { ...styles[p.square], background: "rgba(173, 216, 230, 0.7)", cursor: 'pointer' };
+              });
+              if (selectedPieceForBlessing) {
+                styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0, 128, 0, 0.7)" };
+                
+                // let emptySquaresFoundForHighlighting = 0; // Removed
+                for (let r = 1; r <= 8; r++) {
+                  for (let c = 0; c < 8; c++) {
+                    const s = String.fromCharCode(97 + c) + r;
+                    const pieceOnSquare = game.get(s as Square);
+                    // console.log(`[SB Debug] Checking square ${s}:`, pieceOnSquare); // Optional: very verbose
+                    if (pieceOnSquare === null) {
+                      // emptySquaresFoundForHighlighting++; // Removed
+                      styles[s] = { ...(styles[s] || {}), background: "rgba(255, 255, 0, 0.4)", cursor: 'pointer' };
+                    }
+                  }
+                }
+                // console.log(`[SB Debug] customSquareStyles: Found ${emptySquaresFoundForHighlighting} empty squares to highlight yellow.`); // Removed
               }
             }
             return styles;

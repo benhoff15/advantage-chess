@@ -23,9 +23,9 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "royal_decree",
-    name: "Royal Decree",
-    description: "Once per game, you can force your opponent's next move to be with a specific piece type",
+  { id: "sacrificial_blessing",
+    name: "Sacrificial Blessing",
+    description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.",
     rarity: "common"
   },
   { 

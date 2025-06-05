@@ -37,7 +37,13 @@ export interface PlayerAdvantageStates {
   lightningCapture?: LightningCaptureState;
   openingSwap?: OpeningSwapState;
   pawnAmbush?: PawnAmbushState; // Added Pawn Ambush state
+  hasUsedSacrificialBlessing?: boolean;
   // Add other advantage states here as needed
+}
+
+export interface SacrificialBlessingPendingState {
+  color: 'white' | 'black';
+  availablePieces: { type: 'n' | 'b'; square: string }[];
 }
 
 export interface ServerMovePayload {
