@@ -16,7 +16,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "sacrificial_blessing", name: "Sacrificial Blessing", description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.", rarity: "common"},
 
   // Rare (25%)
-  { id: "pawn_ambush", name: "Pawn Ambush", description: "A pawn promotes on reaching 6th rank.", rarity: "rare" },
+  { id: "pawn_ambush", name: "Pawn Ambush", description: "A pawn promotes on reaching 6th rank.", rarity: "rare" }, // done
   { id: "cloak", name: "Cloak", description: "One random piece starts invisible to the opponent. Lasts for 10 moves", rarity: "rare" },
   { id: "counterplay", name: "Counterplay", description: "If your queen is captured, she reappears at home. If you have a piece on her home squre, it will be replaced by the queen.", rarity: "rare" },
   { id: "knightmare", name: "Knightmare", description: "Each knight may make a double L-move once.", rarity: "rare" },

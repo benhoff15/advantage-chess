@@ -84,6 +84,9 @@ export default function ChessGame() {
 const [showOpeningSwapPrompt, setShowOpeningSwapPrompt] = useState(false);
 const [openingSwapSelection, setOpeningSwapSelection] = useState<string | null>(null);
 const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | null>(null);
+const [hasUsedRoyalDecree, setHasUsedRoyalDecree] = useState(false);
+const [restrictedToPieceType, setRestrictedToPieceType] = useState<string | null>(null);
+const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (myAdvantage?.id === "royal_escort") {
@@ -115,7 +118,10 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
     setMyOpeningSwapState(null);
     setShowOpeningSwapPrompt(false);
   }
-  }, [myAdvantage, game, myOpeningSwapState?.hasSwapped]); // Added dependencies
+  if (myAdvantage?.id !== "royal_decree" && hasUsedRoyalDecree) {
+    setHasUsedRoyalDecree(false); 
+  }
+  }, [myAdvantage, game, myOpeningSwapState?.hasSwapped, hasUsedRoyalDecree]); // Added dependencies
 
   useEffect(() => {
     if (!roomId) return;
@@ -566,6 +572,35 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
     };
     socket.on("openingSwapFailed", handleOpeningSwapFailed);
 
+    const handleRoyalDecreeApplied = ({ pieceType, restrictedPlayerColor }: { pieceType: string, restrictedPlayerColor: "white" | "black" }) => {
+      if (color === restrictedPlayerColor) { 
+        console.log(`[Royal Decree Client] Received royalDecreeApplied. Must move: ${pieceType}. My color: ${color}`);
+        setRestrictedToPieceType(pieceType);
+        const pieceDisplayNames: { [key: string]: string } = { "p": "Pawn", "n": "Knight", "b": "Bishop", "r": "Rook", "q": "Queen", "k": "King" };
+        const niceName = pieceDisplayNames[pieceType] || pieceType;
+        const message = `Royal Decree: Your opponent forces you to move a ${niceName} this turn.`;
+        setRoyalDecreeMessage(message);
+        alert(message); 
+      }
+    };
+    socket.on("royalDecreeApplied", handleRoyalDecreeApplied);
+
+    const handleRoyalDecreeLifted = ({ reason, pieceType }: { reason: string, pieceType: string }) => {
+      console.log(`[Royal Decree Client] Received royalDecreeLifted. Reason: ${reason}, Piece: ${pieceType}`);
+      const pieceDisplayNames: { [key: string]: string } = { "p": "Pawn", "n": "Knight", "b": "Bishop", "r": "Rook", "q": "Queen", "k": "King" };
+      const niceName = pieceDisplayNames[pieceType] || pieceType;
+      let message = "Royal Decree restriction has been lifted.";
+      if (reason === "check") {
+        message = `Royal Decree (move ${niceName}) lifted: You are in check.`;
+      } else if (reason === "no_valid_moves") {
+        message = `Royal Decree (move ${niceName}) lifted: No valid moves available with a ${niceName}.`;
+      }
+      setRestrictedToPieceType(null); 
+      setRoyalDecreeMessage(message);
+      alert(message); 
+    };
+    socket.on("royalDecreeLifted", handleRoyalDecreeLifted);
+
     return () => {
       console.log(
         `[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`,
@@ -580,6 +615,8 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
       socket.off("invalidMove", handleInvalidMove);
       socket.off("openingSwapSuccess", handleOpeningSwapSuccess);
       socket.off("openingSwapFailed", handleOpeningSwapFailed);
+      socket.off("royalDecreeApplied", handleRoyalDecreeApplied);
+      socket.off("royalDecreeLifted", handleRoyalDecreeLifted);
     };
   }, [
     roomId,
@@ -588,11 +625,21 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
     myAdvantage,
     myShieldedPieceInfo,
     fenSnapshotBeforeMove,
-    myOpeningSwapState
-  ]);
+    myOpeningSwapState,
+    // color is crucial here for the new handlers
+  ]); 
   // Note: `game` (useState object) and `fenSnapshotBeforeMove` (ref object) are stable.
   // `color`, `myAdvantage`, `myShieldedPieceInfo` are included because handlers like handleReceiveMove,
   // handleAdvantageAssigned, and the logging in cleanup depend on their current values.
+
+  useEffect(() => {
+    if (color && game.turn() !== color[0] && restrictedToPieceType) {
+      console.log("[Royal Decree Client] Turn changed (no longer my turn), clearing Royal Decree restriction state.");
+      setRestrictedToPieceType(null);
+      setRoyalDecreeMessage(null);
+    }
+  }, [fen, color, restrictedToPieceType, game]);
+
 
   // promptSecondMove function was here and has been removed.
 
@@ -663,6 +710,21 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
       (turn === "b" && myColor !== "black")
     ) {
       return null;
+    }
+
+    if (restrictedToPieceType && myColor && game.turn() === myColor[0]) {
+      if (typeof from === 'string') {
+        const pieceOnFromSquare = game.get(from as Square); 
+        if (!pieceOnFromSquare || pieceOnFromSquare.type !== restrictedToPieceType) {
+          const pieceDisplayNames: { [key: string]: string } = { "p": "Pawn", "n": "Knight", "b": "Bishop", "r": "Rook", "q": "Queen", "k": "King" };
+          const niceName = restrictedToPieceType ? (pieceDisplayNames[restrictedToPieceType] || restrictedToPieceType) : "specified piece";
+          alert(`Royal Decree Active: You must move a ${niceName}.`);
+          return null; 
+        }
+      } else {
+        console.warn('[Royal Decree Client] makeMove called with invalid "from" square:', from);
+        return null;
+      }
     }
 
     // Capture FEN before any move attempt for potential server-side deflection
@@ -1373,8 +1435,41 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
               }}>Skip Swap / Cancel</button>
             </div>
           )}
+          {myAdvantage.id === "royal_decree" && !hasUsedRoyalDecree && (
+            <div style={{ marginTop: '10px' }}>
+              <button
+                onClick={() => {
+                  const pieceTypes = ["p", "n", "b", "r", "q", "k"];
+                  const pieceDisplayNames: { [key: string]: string } = { // Add index signature
+                    "p": "Pawn", "n": "Knight", "b": "Bishop",
+                    "r": "Rook", "q": "Queen", "k": "King"
+                  };
+                  const promptMessage = "Royal Decree: Enter piece type to restrict opponent to\n(p=Pawn, n=Knight, b=Bishop, r=Rook, q=Queen, k=King):";
+                  const selectedPieceTypeInput = window.prompt(promptMessage)?.toLowerCase();
+
+                  if (selectedPieceTypeInput && pieceTypes.includes(selectedPieceTypeInput)) {
+                    console.log(`[Royal Decree Client] Activating. Opponent will be restricted to: ${pieceDisplayNames[selectedPieceTypeInput]}`);
+                    socket.emit("royalDecree", { roomId, pieceType: selectedPieceTypeInput });
+                    setHasUsedRoyalDecree(true);
+                  } else if (selectedPieceTypeInput) { // Input was given but invalid
+                    alert("Invalid piece type entered. Please use one of: p, n, b, r, q, k.");
+                    console.log(`[Royal Decree Client] Invalid piece type entered: ${selectedPieceTypeInput}`);
+                  } else { // Prompt was cancelled or empty
+                    console.log("[Royal Decree Client] Activation cancelled by user.");
+                  }
+                }}
+              >
+                Activate Royal Decree
+              </button>
+            </div>
+          )}
+          {myAdvantage.id === "royal_decree" && hasUsedRoyalDecree && (
+            <p style={{ marginTop: '10px' }}><em>Royal Decree has been used.</em></p>
+          )}
         </div>
       )}
+
+      {royalDecreeMessage && <p style={{ color: 'orange', fontWeight: 'bold', marginTop: '5px', marginBottom: '5px' }}>{royalDecreeMessage}</p>}
 
       <div style={{ position: "relative" }}>
         <Chessboard
@@ -1394,26 +1489,41 @@ const [myOpeningSwapState, setMyOpeningSwapState] = useState<OpeningSwapState | 
           }}
           boardWidth={500}
           boardOrientation={color === "black" ? "black" : "white"}
-          customSquareStyles={
-            isAwaitingSecondLcMove && lcFirstMoveDetails
-              ? {
-                  ...lcPossibleSecondMoves.reduce(
-                    (acc, sq) => ({
-                      ...acc,
-                      [sq]: { background: "rgba(255, 255, 0, 0.4)" },
-                    }),
-                    {},
-                  ),
-                  [lcFirstMoveDetails.to]: {
-                    background: "rgba(0, 255, 0, 0.4)",
-                  }, // Highlight the piece to move again
+          customSquareStyles={(() => {
+            let styles: { [key: string]: React.CSSProperties } = {};
+            if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
+              styles = {
+                ...lcPossibleSecondMoves.reduce(
+                  (acc, sq) => ({
+                    ...acc,
+                    [sq]: { background: "rgba(255, 255, 0, 0.4)" },
+                  }),
+                  {},
+                ),
+                [lcFirstMoveDetails.to]: {
+                  background: "rgba(0, 255, 0, 0.4)",
+                },
+              };
+            } else if (openingSwapSelection) {
+              styles[openingSwapSelection] = { background: "rgba(255, 220, 0, 0.6)" };
+            }
+
+            if (restrictedToPieceType && color && game.turn() === color[0]) {
+              // Iterate over all squares to find pieces to dim
+              const squares = game.board().flat().map(p => p?.square).filter(Boolean);
+              for (const square of squares) {
+                if (square) { // Ensure square is not null
+                    const pieceOnSquare = game.get(square as Square);
+                    if (pieceOnSquare && pieceOnSquare.color === color[0]) {
+                        if (pieceOnSquare.type !== restrictedToPieceType) {
+                            styles[square] = { ...styles[square], opacity: 0.5 };
+                        }
+                    }
                 }
-              : openingSwapSelection // Highlight for Opening Swap selection
-              ? {
-                  [openingSwapSelection]: { background: "rgba(255, 220, 0, 0.6)" },
-                }
-              : {}
-          }
+              }
+            }
+            return styles;
+          })()}
         />
       </div>
 

@@ -53,6 +53,9 @@ type RoomState = {
   blackOpeningSwapState?: OpeningSwapState;
   whitePawnAmbushState?: PawnAmbushState; // Added
   blackPawnAmbushState?: PawnAmbushState; // Added
+  royalDecreeRestriction?: { targetColor: "white" | "black", pieceType: string } | null;
+  whiteHasUsedRoyalDecree?: boolean;
+  blackHasUsedRoyalDecree?: boolean;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -121,6 +124,9 @@ export function setupSocketHandlers(io: Server) {
           silentShieldPieces: { white: null, black: null },
           whitePawnAmbushState: undefined, // Added
           blackPawnAmbushState: undefined, // Added
+          royalDecreeRestriction: null,
+          whiteHasUsedRoyalDecree: false,
+          blackHasUsedRoyalDecree: false,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states.`);
@@ -138,6 +144,9 @@ export function setupSocketHandlers(io: Server) {
         // Royal Escort states are typically initialized upon advantage assignment, but good to check
         if (room.whiteAdvantage?.id === "royal_escort" && !room.whiteRoyalEscortState) room.whiteRoyalEscortState = { usedCount: 0};
         if (room.blackAdvantage?.id === "royal_escort" && !room.blackRoyalEscortState) room.blackRoyalEscortState = { usedCount: 0};
+        if (room.royalDecreeRestriction === undefined) room.royalDecreeRestriction = null;
+        if (room.whiteHasUsedRoyalDecree === undefined) room.whiteHasUsedRoyalDecree = false;
+        if (room.blackHasUsedRoyalDecree === undefined) room.blackHasUsedRoyalDecree = false;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -193,6 +202,10 @@ export function setupSocketHandlers(io: Server) {
                 room.whitePawnAmbushState = { ambushedPawns: [] }; // Added
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage }); // Standard emission
                 console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`); // Added
+            } else if (room.whiteAdvantage.id === "royal_decree") {
+                room.whiteHasUsedRoyalDecree = false;
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -225,6 +238,10 @@ export function setupSocketHandlers(io: Server) {
                 room.blackPawnAmbushState = { ambushedPawns: [] }; // Added
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage }); // Standard emission for black
                 console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`); // Added
+            } else if (room.blackAdvantage.id === "royal_decree") {
+                room.blackHasUsedRoyalDecree = false;
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                console.log(`Black player (${socket.id}) assigned Royal Decree, state initialized.`);
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -276,6 +293,45 @@ export function setupSocketHandlers(io: Server) {
         let moveResult: Move | null = null; 
         const receivedMove = clientMoveData as ServerMovePayload; // Use ServerMovePayload
         const originalFenBeforeAttempt = room.fen!; // Assert non-null if sure room.fen exists
+
+        // --- Royal Decree Restriction Check ---
+        let isRoyalDecreeOverridden = false; 
+
+        if (room.royalDecreeRestriction && room.royalDecreeRestriction.targetColor === senderColor) {
+          const restriction = room.royalDecreeRestriction;
+          // serverGame is already initialized with room.fen
+
+          console.log(`[Royal Decree Server] Player ${senderColor} has an active restriction: move ${restriction.pieceType}`);
+
+          if (serverGame.inCheck()) {
+            console.log(`[Royal Decree Server] Restriction for ${senderColor} (piece: ${restriction.pieceType}) lifted due to CHECK.`);
+            room.royalDecreeRestriction = null; // Clear restriction
+            isRoyalDecreeOverridden = true;
+            socket.emit("royalDecreeLifted", { 
+              reason: "check", 
+              pieceType: restriction.pieceType 
+            });
+          } else {
+            const legalMoves = serverGame.moves({ verbose: true });
+            const hasMatchingMoves = legalMoves.some(move => {
+              const pieceDetails = serverGame.get(move.from);
+              return pieceDetails && pieceDetails.type === restriction.pieceType;
+            });
+
+            if (!hasMatchingMoves) {
+              console.log(`[Royal Decree Server] Restriction for ${senderColor} (piece: ${restriction.pieceType}) lifted due to NO VALID MOVES with that piece type.`);
+              room.royalDecreeRestriction = null; // Clear restriction
+              isRoyalDecreeOverridden = true;
+              socket.emit("royalDecreeLifted", { 
+                reason: "no_valid_moves", 
+                pieceType: restriction.pieceType 
+              });
+            } else {
+              console.log(`[Royal Decree Server] ENFORCING restriction for ${senderColor} to move a ${restriction.pieceType}.`);
+            }
+          }
+        }
+        // --- End Royal Decree Restriction Check ---
 
         // Fetch advantage states for the current player
         let currentPlayerAdvantageState_FB: FocusedBishopAdvantageState | undefined;
@@ -332,6 +388,21 @@ export function setupSocketHandlers(io: Server) {
           }
         }
         // ---- End of Silent Shield Capture Prevention ----
+
+        // --- Royal Decree ENFORCEMENT ---
+        if (room.royalDecreeRestriction && room.royalDecreeRestriction.targetColor === senderColor && !isRoyalDecreeOverridden) {
+          const pieceBeingMoved = serverGame.get(receivedMove.from as any); // 'any' for Square type
+          if (!pieceBeingMoved || pieceBeingMoved.type !== room.royalDecreeRestriction.pieceType) {
+            console.warn(`[Royal Decree Server] Invalid move by ${senderColor}. Tried to move ${pieceBeingMoved?.type || 'empty square'} from ${receivedMove.from} instead of restricted ${room.royalDecreeRestriction.pieceType}.`);
+            socket.emit("invalidMove", { 
+              message: `Royal Decree Active: You must move a ${room.royalDecreeRestriction.pieceType.toUpperCase()}.`, 
+              move: receivedMove // Use receivedMove here as per existing code
+            });
+            return; // Stop processing this move
+          }
+          console.log(`[Royal Decree Server] Move by ${senderColor} with piece ${pieceBeingMoved.type} matches restriction ${room.royalDecreeRestriction.pieceType}.`);
+        }
+        // --- End Royal Decree ENFORCEMENT ---
 
         if (receivedMove.special?.startsWith("castle-master")) {
           // Assumes handleCastleMaster sets moveResult and updates serverGame internally
@@ -611,6 +682,16 @@ export function setupSocketHandlers(io: Server) {
               console.log(`[sendMove] Pawn Ambush for ${senderColor} committed. State:`, pawnAmbushFinalState);
             }
 
+            // ---- Clear Royal Decree if it was active and followed ----
+            if (room.royalDecreeRestriction && 
+                room.royalDecreeRestriction.targetColor === senderColor &&
+                !isRoyalDecreeOverridden) {
+              
+              console.log(`[Royal Decree Server] Clearing Royal Decree restriction for ${senderColor} (was targeting piece: ${room.royalDecreeRestriction.pieceType}) after successful move.`);
+              room.royalDecreeRestriction = null;
+            }
+            // ---- End Clear Royal Decree ----
+
             // ---- Start of Silent Shield currentSquare update ---- (Keep as is, but uses the final serverGame state)
             let updatedShieldedPieceForEmit: ShieldedPieceInfo | null = null;
             if (room.silentShieldPieces && senderColor && moveResult) { 
@@ -791,6 +872,80 @@ export function setupSocketHandlers(io: Server) {
 
       console.log(`[Opening Swap SUCCESS] Room ${roomId}, Player ${playerColor} swapped ${from} and ${to}. New FEN: ${room.fen}`);
       io.to(roomId).emit("openingSwapSuccess", { newFen: room.fen, from, to, color: playerColor });
+    });
+
+    socket.on("royalDecree", ({ roomId, pieceType }: { roomId: string; pieceType: string }) => {
+      const room = rooms[roomId];
+      const senderId = socket.id;
+
+      if (!room) {
+        console.error(`[Royal Decree Server] Room ${roomId} not found.`);
+        socket.emit("royalDecreeFailed", { message: "Room not found." });
+        return;
+      }
+
+      let senderColor: "white" | "black" | null = null;
+      let opponentColor: "white" | "black" | null = null;
+      let opponentSocketId: string | undefined;
+
+      if (senderId === room.white) {
+        senderColor = "white";
+        opponentColor = "black";
+        opponentSocketId = room.black;
+      } else if (senderId === room.black) {
+        senderColor = "black";
+        opponentColor = "white";
+        opponentSocketId = room.white;
+      } else {
+        console.error(`[Royal Decree Server] Sender ${senderId} not in room ${roomId}.`);
+        socket.emit("royalDecreeFailed", { message: "You are not a player in this room." });
+        return;
+      }
+
+      if (!room.fen) {
+        console.error(`[Royal Decree Server] Room ${roomId} has no FEN state.`);
+        socket.emit("royalDecreeFailed", { message: "Game state (FEN) not found." });
+        return;
+      }
+      const serverGame = new Chess(room.fen);
+
+      if (serverGame.turn() !== senderColor[0]) {
+        socket.emit("royalDecreeFailed", { message: "Not your turn." });
+        return;
+      }
+
+      const playerAdvantage = senderColor === "white" ? room.whiteAdvantage : room.blackAdvantage;
+      if (playerAdvantage?.id !== "royal_decree") {
+        socket.emit("royalDecreeFailed", { message: "You do not have Royal Decree." });
+        return;
+      }
+
+      const hasUsedDecree = senderColor === "white" ? room.whiteHasUsedRoyalDecree : room.blackHasUsedRoyalDecree;
+      if (hasUsedDecree) {
+        socket.emit("royalDecreeFailed", { message: "Royal Decree already used." });
+        return;
+      }
+
+      const validPieceTypes = ["p", "n", "b", "r", "q", "k"];
+      if (!validPieceTypes.includes(pieceType)) {
+        socket.emit("royalDecreeFailed", { message: "Invalid piece type specified." });
+        return;
+      }
+
+      // Apply Decree
+      if (senderColor === "white") {
+        room.whiteHasUsedRoyalDecree = true;
+      } else {
+        room.blackHasUsedRoyalDecree = true;
+      }
+      room.royalDecreeRestriction = { targetColor: opponentColor!, pieceType };
+
+      console.log(`[Royal Decree Server] Player ${senderColor} (${senderId}) activated Royal Decree in room ${roomId}. Opponent (${opponentColor}) restricted to ${pieceType}.`);
+
+      if (opponentSocketId) {
+        io.to(opponentSocketId).emit("royalDecreeApplied", { pieceType, restrictedPlayerColor: opponentColor });
+      }
+      socket.emit("royalDecreeConfirmed");
     });
 
     socket.on("disconnect", () => {
