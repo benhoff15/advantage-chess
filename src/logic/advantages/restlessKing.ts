@@ -9,7 +9,7 @@ import { toast } from "react-toastify";
  */
 export function showRestlessKingNotice(isYou: boolean, remaining: number) {
   if (isYou) {
-    toast(`Restless King activated. Your opponent cannot check you. (${remaining} uses left)`);
+    toast(`Restless King: Opponent cannot check. ${remaining} uses left.`);
   } else {
     toast(`You cannot check this turn due to Restless King.`);
   }
