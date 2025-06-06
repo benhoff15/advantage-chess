@@ -50,7 +50,6 @@ export interface PlayerAdvantageStates {
   arcane_reinforcement?: {
     spawnedSquare?: string; // e.g., 'e2', 'f7'
   };
-  ghostFile?: { file: string }; // e.g., 'd' for the d-file
   // Add other advantage states here as needed
 }
 

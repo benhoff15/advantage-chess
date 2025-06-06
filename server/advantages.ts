@@ -16,7 +16,6 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "sacrificial_blessing", name: "Sacrificial Blessing", description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.", rarity: "common"}, // done
   { id: "restless_king", name: "Restless King", description: "If your king moves, your opponent cannot give check on their next turn.", rarity: "common" }, // done
   { id: "queens_domain", name: "Queen’s Domain", description: "Your queen may pass through friendly pieces once per game.", rarity: "common", serverValidation: validateQueensDomainServerMove }, // done
-  { id: "ghost_file", name: "Ghost File", description: "One file (a–h) is ‘ghosted’ for you: enemy pieces on that file can’t block your movement.", rarity: "common"},
   { id: "coordinated_push", name: "Coordinated Push", description: "When two of your pawns are side by side and both move forward in the same turn.", rarity: "common"},
 
   // Rare (25%)

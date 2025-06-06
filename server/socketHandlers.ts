@@ -24,7 +24,6 @@ import { validateKnightmareServerMove } from './logic/advantages/knightmare';
 import { LightningCaptureState, PawnAmbushState } from "../shared/types"; // Added PawnAmbushState
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
-import { assignGhostFile, getValidatedGhostMoveBoard } from './logic/advantages/ghostFile';
 
 console.log("setupSocketHandlers loaded");
 
@@ -84,8 +83,6 @@ export type RoomState = {
   blackQueenlyCompensationState?: { hasUsed: boolean };
   whiteArcaneReinforcementSpawnedSquare?: Square | null;
   blackArcaneReinforcementSpawnedSquare?: Square | null;
-  whiteGhostFile?: string; // e.g., 'e'
-  blackGhostFile?: string; // e.g., 'c'
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -170,11 +167,9 @@ export function setupSocketHandlers(io: Server) {
           blackQueenlyCompensationState: { hasUsed: false },
           whiteArcaneReinforcementSpawnedSquare: null,
           blackArcaneReinforcementSpawnedSquare: null,
-          whiteGhostFile: undefined,
-          blackGhostFile: undefined,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), and Ghost File (undefined).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), and Arcane Reinforcement (null).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -205,8 +200,6 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackAdvantage?.id === "queenly_compensation" && (!room.blackQueenlyCompensationState || typeof room.blackQueenlyCompensationState.hasUsed === 'undefined')) room.blackQueenlyCompensationState = { hasUsed: false };
         if (room.whiteArcaneReinforcementSpawnedSquare === undefined) room.whiteArcaneReinforcementSpawnedSquare = null;
         if (room.blackArcaneReinforcementSpawnedSquare === undefined) room.blackArcaneReinforcementSpawnedSquare = null;
-        if (room.whiteGhostFile === undefined) room.whiteGhostFile = undefined;
-        if (room.blackGhostFile === undefined) room.blackGhostFile = undefined;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -267,161 +260,114 @@ export function setupSocketHandlers(io: Server) {
 
         // White player's advantage processing & emitting advantageAssigned
         if (room.whiteAdvantage && room.white) {
-            const whitePlayerSocket = io.sockets.sockets.get(room.white);
-            if (whitePlayerSocket) {
-                let whitePlayerGhostFile: string | undefined = undefined;
-                if (room.whiteAdvantage.id === 'ghost_file') {
-                    room.whiteGhostFile = assignGhostFile();
-                    whitePlayerGhostFile = room.whiteGhostFile;
-                    console.log(`White player (${room.white}) assigned Ghost File: ${whitePlayerGhostFile}`);
+            if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
+                const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
+                if (whiteShieldedPiece) {
+                    room.silentShieldPieces.white = whiteShieldedPiece;
+                    console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
+                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage, shieldedPiece: whiteShieldedPiece });
+                } else {
+                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
                 }
-                // Opponent's (black's) ghost file for white player - blackGhostFile might be assigned later if black gets it
-                // So we will retrieve it when processing black's advantage and then re-emit to white if necessary,
-                // OR, more simply, just rely on blackGhostFile being set on the room object if black gets it.
-
-                const whitePayload: any = { advantage: room.whiteAdvantage };
-
-                if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
-                    const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
-                    if (whiteShieldedPiece) {
-                        room.silentShieldPieces.white = whiteShieldedPiece;
-                        whitePayload.shieldedPiece = whiteShieldedPiece;
-                        console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
-                    }
-                } else if (room.whiteAdvantage.id === "royal_escort") {
-                    room.whiteRoyalEscortState = { usedCount: 0 };
-                    console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
-                } else if (room.whiteAdvantage.id === "lightning_capture") {
-                    room.whiteLightningCaptureState = { used: false };
-                    console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
-                } else if (room.whiteAdvantage.id === "opening_swap") {
-                    room.whiteOpeningSwapState = { hasSwapped: false };
-                    console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
-                } else if (room.whiteAdvantage.id === "pawn_ambush") {
-                    room.whitePawnAmbushState = { ambushedPawns: [] };
-                    console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`);
-                } else if (room.whiteAdvantage.id === "royal_decree") {
-                    room.whiteHasUsedRoyalDecree = false;
-                    console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
-                } else if (room.whiteAdvantage.id === "queens_domain") {
-                    room.whiteQueensDomainState = { isActive: false, hasUsed: false };
-                    console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
-                } else if (room.whiteAdvantage.id === "knightmare") {
-                    room.whiteKnightmareState = { hasUsed: false };
-                    console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
-                } else if (room.whiteAdvantage.id === "queenly_compensation") {
-                    room.whiteQueenlyCompensationState = { hasUsed: false };
-                    console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
-                } else if (room.whiteAdvantage.id === "arcane_reinforcement") {
-                    whitePayload.advantageDetails = { spawnedSquare: room.whiteArcaneReinforcementSpawnedSquare };
-                    console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
-                }
-                
-                // Ghost file details for white player's payload
-                whitePayload.ghostFile = whitePlayerGhostFile; // Own ghost file
-                // Opponent's ghost file will be known after black's advantage is processed.
-                // We'll set it to room.blackGhostFile which will be defined if black has it.
-                whitePayload.opponentGhostFile = room.blackGhostFile; // This will be undefined if black doesn't have ghost_file yet
-
-                console.log(`[Advantage Emission White PRE] Payload for white: ${JSON.stringify(whitePayload)}`);
-                // Note: We will emit to white LATER, after black's potential ghost file is known.
+            } else if (room.whiteAdvantage.id === "royal_escort") {
+                room.whiteRoyalEscortState = { usedCount: 0 };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
+            } else if (room.whiteAdvantage.id === "lightning_capture") {
+                room.whiteLightningCaptureState = { used: false }; // Initialize
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
+            } else if (room.whiteAdvantage.id === "opening_swap") {
+                room.whiteOpeningSwapState = { hasSwapped: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
+            } else if (room.whiteAdvantage.id === "pawn_ambush") { // Added
+                room.whitePawnAmbushState = { ambushedPawns: [] }; // Added
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage }); // Standard emission
+                console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`); // Added
+            } else if (room.whiteAdvantage.id === "royal_decree") {
+                room.whiteHasUsedRoyalDecree = false;
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
+            } else if (room.whiteAdvantage.id === "queens_domain") {
+                room.whiteQueensDomainState = { isActive: false, hasUsed: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
+            } else if (room.whiteAdvantage.id === "knightmare") { 
+                room.whiteKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
+            } else if (room.whiteAdvantage.id === "queenly_compensation") {
+                room.whiteQueenlyCompensationState = { hasUsed: false };
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
+            } else if (room.whiteAdvantage.id === "arcane_reinforcement") {
+                const whitePayload = {
+                    advantage: room.whiteAdvantage,
+                    advantageDetails: { spawnedSquare: room.whiteArcaneReinforcementSpawnedSquare }
+                };
+                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to white. Payload:', JSON.stringify(whitePayload));
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", whitePayload);
+                console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
+            } else { // Standard advantage emission for white
+                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
         }
 
         // Black player's advantage processing (socket is black's socket here)
-        if (room.blackAdvantage && room.black) { // room.black is the current socket.id
-            let blackPlayerGhostFile: string | undefined = undefined;
-            if (room.blackAdvantage.id === 'ghost_file') {
-                room.blackGhostFile = assignGhostFile();
-                blackPlayerGhostFile = room.blackGhostFile;
-                console.log(`Black player (${room.black}) assigned Ghost File: ${blackPlayerGhostFile}`);
-            }
-            // Opponent's (white's) ghost file for black player
-            let opponentGhostFileForBlack: string | undefined = room.whiteGhostFile;
-
-            const blackPayload: any = { advantage: room.blackAdvantage };
-
+        // The applyArcaneReinforcement logic for black has already run above and set room.blackArcaneReinforcementSpawnedSquare
+        if (room.blackAdvantage) {
             if (room.blackAdvantage.id === "silent_shield" && room.silentShieldPieces) {
                 const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
                 if (blackShieldedPiece) {
                     room.silentShieldPieces.black = blackShieldedPiece;
-                    blackPayload.shieldedPiece = blackShieldedPiece;
                     console.log(`Black player (${room.black}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
+                    socket.emit("advantageAssigned", { advantage: room.blackAdvantage, shieldedPiece: blackShieldedPiece });
+                } else {
+                     socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 }
             } else if (room.blackAdvantage.id === "royal_escort") {
                 room.blackRoyalEscortState = { usedCount: 0 };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Royal Escort, state initialized.`);
             } else if (room.blackAdvantage.id === "lightning_capture") {
-                room.blackLightningCaptureState = { used: false };
+                room.blackLightningCaptureState = { used: false }; // Initialize
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Lightning Capture, state initialized.`);
             } else if (room.blackAdvantage.id === "opening_swap") {
                 room.blackOpeningSwapState = { hasSwapped: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Opening Swap, state initialized.`);
-            } else if (room.blackAdvantage.id === "pawn_ambush") {
-                room.blackPawnAmbushState = { ambushedPawns: [] };
-                console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`);
+            } else if (room.blackAdvantage.id === "pawn_ambush") { // Added
+                room.blackPawnAmbushState = { ambushedPawns: [] }; // Added
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage }); // Standard emission for black
+                console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`); // Added
             } else if (room.blackAdvantage.id === "royal_decree") {
                 room.blackHasUsedRoyalDecree = false;
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Royal Decree, state initialized.`);
             } else if (room.blackAdvantage.id === "queens_domain") {
                 room.blackQueensDomainState = { isActive: false, hasUsed: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Queen's Domain, state initialized.`);
             } else if (room.blackAdvantage.id === "knightmare") {
-                room.blackKnightmareState = { hasUsed: false };
+                room.blackKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Knightmare, state initialized: ${JSON.stringify(room.blackKnightmareState)}`);
             } else if (room.blackAdvantage.id === "queenly_compensation") {
                 room.blackQueenlyCompensationState = { hasUsed: false };
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
                 console.log(`Black player (${socket.id}) assigned Queenly Compensation, state initialized.`);
             } else if (room.blackAdvantage.id === "arcane_reinforcement") {
-                blackPayload.advantageDetails = { spawnedSquare: room.blackArcaneReinforcementSpawnedSquare };
+                const blackPayload = {
+                    advantage: room.blackAdvantage,
+                    advantageDetails: { spawnedSquare: room.blackArcaneReinforcementSpawnedSquare }
+                };
+                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to black. Payload:', JSON.stringify(blackPayload));
+                socket.emit("advantageAssigned", blackPayload);
                 console.log(`Black player (${socket.id}) assigned Arcane Reinforcement. Spawned at: ${room.blackArcaneReinforcementSpawnedSquare}`);
-            }
-
-            blackPayload.ghostFile = blackPlayerGhostFile;
-            blackPayload.opponentGhostFile = opponentGhostFileForBlack;
-            
-            console.log(`[Advantage Emission Black] Emitting advantageAssigned to black (${socket.id}). Payload: ${JSON.stringify(blackPayload)}`);
-            socket.emit("advantageAssigned", blackPayload);
-        }
-        
-        // Now, re-emit to White player with potentially updated opponentGhostFile (if black got ghost_file)
-        if (room.whiteAdvantage && room.white) {
-            const whitePlayerSocket = io.sockets.sockets.get(room.white);
-            if (whitePlayerSocket) {
-                // Construct the payload again, this time room.blackGhostFile will be set if black has it.
-                const whitePayloadFinal: any = { advantage: room.whiteAdvantage };
-                
-                // Re-add other conditional properties for white
-                if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces?.white) {
-                    whitePayloadFinal.shieldedPiece = room.silentShieldPieces.white;
-                } else if (room.whiteAdvantage.id === "arcane_reinforcement") {
-                    whitePayloadFinal.advantageDetails = { spawnedSquare: room.whiteArcaneReinforcementSpawnedSquare };
-                }
-                // ... (add all other 'else if' conditions for white's advantage types here, similar to above)
-                 else if (room.whiteAdvantage.id === "royal_escort") {
-                    // No specific payload part, state already set on room
-                } else if (room.whiteAdvantage.id === "lightning_capture") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "opening_swap") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "pawn_ambush") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "royal_decree") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "queens_domain") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "knightmare") {
-                    // No specific payload part
-                } else if (room.whiteAdvantage.id === "queenly_compensation") {
-                    // No specific payload part
-                }
-
-
-                whitePayloadFinal.ghostFile = room.whiteGhostFile; // Their own ghost file (already set if they have it)
-                whitePayloadFinal.opponentGhostFile = room.blackGhostFile; // Opponent's (black's) ghost file
-
-                console.log(`[Advantage Emission White POST] Emitting advantageAssigned to white (${room.white}). Payload: ${JSON.stringify(whitePayloadFinal)}`);
-                whitePlayerSocket.emit("advantageAssigned", whitePayloadFinal);
+            } else { // Standard advantage emission for black
+                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
         }
         // ---- END Advantage Assignment and State Init ----
@@ -476,68 +422,12 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
         
-        let moveResult: Move | null = null;
+        let moveResult: Move | null = null; 
         const receivedMove = clientMoveData as ServerMovePayload; // Use ServerMovePayload
         const originalFenBeforeAttempt = room.fen!; // Assert non-null if sure room.fen exists
 
-        const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
-        const playerGhostFile = senderColor === 'white' ? room.whiteGhostFile : room.blackGhostFile;
-
-        if (playerAdvantage?.id === 'ghost_file' && playerGhostFile && senderColor) {
-            console.log(`[SV socketHandlers.ts sendMove] GhostFile: Applying logic for ${senderColor} with file ${playerGhostFile}.`); // Enhanced existing log
-            const ghostFen = getValidatedGhostMoveBoard(originalFenBeforeAttempt, senderColor[0] as 'w' | 'b', playerGhostFile);
-            console.log(`[SV socketHandlers.ts sendMove] GhostFile: Generated ghostFEN: ${ghostFen} (Original FEN: ${originalFenBeforeAttempt})`);
-
-            if (ghostFen) {
-                const ghostValidationGame = new Chess(ghostFen);
-                let ghostMoveAttempt: Move | null = null;
-                try {
-                    ghostMoveAttempt = ghostValidationGame.move({
-                        from: receivedMove.from,
-                        to: receivedMove.to,
-                        promotion: receivedMove.promotion as any
-                    });
-                } catch (e) {
-                    console.warn(`[sendMove Ghost File] Error during move attempt on ghost board: ${e}`);
-                    ghostMoveAttempt = null;
-                }
-                console.log(`[SV socketHandlers.ts sendMove] GhostFile: Move attempt on ghost board: ${ghostMoveAttempt ? 'SUCCESS' : 'FAIL'}, From: ${receivedMove.from}, To: ${receivedMove.to}`);
-
-                if (ghostMoveAttempt) {
-                    // console.log(`[sendMove Ghost File] Move ${receivedMove.from}-${receivedMove.to} successful on ghost board.`); // Already covered by above log
-                    serverGame.load(originalFenBeforeAttempt); 
-                    const pieceOnRealToSquare = serverGame.get(receivedMove.to as Square);
-                    console.log(`[SV socketHandlers.ts sendMove] GhostFile: Ghost board move OK. Piece on real target ${receivedMove.to}: ${JSON.stringify(pieceOnRealToSquare)}. Attempting final move on real board.`);
-                    if (pieceOnRealToSquare && pieceOnRealToSquare.color === senderColor[0]) {
-                        moveResult = null;
-                        console.warn(`[SV socketHandlers.ts sendMove] GhostFile: Invalid move - Cannot land on own piece on real board at ${receivedMove.to}.`);
-                    } else {
-                        try {
-                            moveResult = serverGame.move({
-                                from: receivedMove.from,
-                                to: receivedMove.to,
-                                promotion: receivedMove.promotion as any
-                            });
-                            console.log(`[SV socketHandlers.ts sendMove] GhostFile: Final move result on real board: ${moveResult ? 'SUCCESS' : 'FAIL'}`);
-                            if (!moveResult) {
-                                console.warn(`[SV socketHandlers.ts sendMove] GhostFile: Move ${receivedMove.from}-${receivedMove.to} was legal on ghost board but illegal on real board (e.g., left king in check).`);
-                            }
-                        } catch (e) {
-                            console.warn(`[SV socketHandlers.ts sendMove] GhostFile: Error during final move attempt on real board: ${e}`);
-                            moveResult = null;
-                        }
-                    }
-                } else {
-                    moveResult = null; // Already set if ghostMoveAttempt is null, but explicit
-                    console.warn(`[SV socketHandlers.ts sendMove] GhostFile: Move ${receivedMove.from}-${receivedMove.to} invalid on ghost board, moveResult set to null.`);
-                }
-            } else {
-                moveResult = null;
-                console.error(`[SV socketHandlers.ts sendMove] GhostFile: Failed to generate ghost board FEN, moveResult set to null.`);
-            }
-        } else {
-            // --- Royal Decree Restriction Check ---
-            let isRoyalDecreeOverridden = false;
+        // --- Royal Decree Restriction Check ---
+        let isRoyalDecreeOverridden = false; 
 
         if (room.royalDecreeRestriction && room.royalDecreeRestriction.targetColor === senderColor) {
           const restriction = room.royalDecreeRestriction;
@@ -687,7 +577,6 @@ export function setupSocketHandlers(io: Server) {
         }
         // --- End Royal Decree ENFORCEMENT ---
 
-        // Ensure this block is within the `else` for non-Ghost File moves
         if (receivedMove.special?.startsWith("castle-master")) {
           // Assumes handleCastleMaster sets moveResult and updates serverGame internally
           if (senderColor === null) {
@@ -972,8 +861,7 @@ export function setupSocketHandlers(io: Server) {
               }
             }
           }
-        } // This closes the standard move `else` block
-    } // This closes the `else` block for `if (playerAdvantage?.id === 'ghost_file' ...)`
+        }
         // End of special/standard move blocks. moveResult is either a valid Move object or null.
 
         
