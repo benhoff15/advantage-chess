@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
-import { Chess, PieceSymbol } from "chess.js";
+import { Chess, PieceSymbol, Square, Move } from "chess.js";
 import { Chessboard } from "react-chessboard";
-import { Square } from "chess.js";
 import { socket } from "../socket";
 import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState } from "../../shared/types"; // Import ServerMovePayload
 import { useSacrificialBlessingStore, SacrificialBlessingPiece } from "../logic/advantages/sacrificialBlessing";
@@ -48,7 +47,8 @@ import {
   handleKnightmareClientMove,
 } from "../logic/advantages/knightmare";
 import { shouldShowQueenlyCompensationToast } from '../logic/advantages/queenlyCompensation';
-import { Move } from "chess.js";
+import { getGhostHighlightLegalMoves, getGhostFileSquareStyles } from '../logic/advantages/ghostFile';
+
 
 // Define the type for the chess.js Move object if not already available globally
 // type ChessJsMove = ReturnType<Chess['move']>; // This is a more precise way if Chess['move'] is well-typed
@@ -106,6 +106,9 @@ const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | nu
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
 const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUsed: boolean } | null>(null);
 const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = useState<string | null>(null);
+const [myGhostFile, setMyGhostFile] = useState<string | null>(null);
+const [opponentGhostFile, setOpponentGhostFile] = useState<string | null>(null);
+const [selectedPieceSquare, setSelectedPieceSquare] = useState<Square | null>(null);
 
   const {
     isSacrificialBlessingActive,
@@ -205,10 +208,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   if (myAdvantage?.id !== "arcane_reinforcement") {
     if (arcaneReinforcementSpawnedSquare) setArcaneReinforcementSpawnedSquare(null);
   }
+  
+  if (myAdvantage?.id !== 'ghost_file') {
+    if (myGhostFile !== null) setMyGhostFile(null);
+    if (opponentGhostFile !== null) setOpponentGhostFile(null);
+  }
   // Note: Arcane Reinforcement's spawnedSquare is set via handleAdvantageAssigned,
   // and doesn't need direct initialization here beyond resetting if the advantage changes.
 
-  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // Added arcaneReinforcementSpawnedSquare dependency
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare, myGhostFile, opponentGhostFile]); // Added dependencies
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -565,11 +573,20 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       advantage: Advantage;
       shieldedPiece?: ShieldedPieceInfo;
       advantageDetails?: any; // To accommodate various advantage details
+      ghostFile?: string; // Added for Ghost File
+      opponentGhostFile?: string; // Added for Ghost File
     }) => {
-      console.log('[Arcane Reinforcement Debug Client] Received advantageAssigned event. Data:', JSON.stringify(data));
-      console.log("[ChessGame event] advantageAssigned:", data); // Existing log, can be kept or removed
+      // console.log('[ChessGame event] advantageAssigned. Raw Data:', JSON.stringify(data)); // Original log
       setMyAdvantage(data.advantage);
       setArcaneReinforcementSpawnedSquare(null); // Clear previous AR state
+
+      // Handle Ghost File specific data
+      const myGF = data.ghostFile || null;
+      const oppGF = data.opponentGhostFile || null;
+      setMyGhostFile(myGF);
+      setOpponentGhostFile(oppGF);
+      console.log(`[CL ChessGame.tsx handleAdvantageAssigned] MyAdv: ${data.advantage.id}, MyGhostFile: ${myGF}, OpponentGhostFile: ${oppGF}`);
+
 
       if (data.shieldedPiece) {
         setMyShieldedPieceInfo(data.shieldedPiece);
@@ -587,20 +604,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         console.log("[ChessGame handleAdvantageAssigned] Queenly Compensation advantage assigned, state initialized.");
       } else if (data.advantage.id === 'arcane_reinforcement') {
         if (data.advantageDetails && typeof data.advantageDetails.spawnedSquare === 'string' && data.advantageDetails.spawnedSquare.length > 0) {
-          // Square is a non-empty string, so a bishop was spawned
           setArcaneReinforcementSpawnedSquare(data.advantageDetails.spawnedSquare);
           alert("🧙 Arcane Reinforcement: You begin with an extra bishop!");
           console.log(`[ChessGame] Arcane Reinforcement: Bishop spawned at ${data.advantageDetails.spawnedSquare}`);
         } else if (data.advantageDetails && data.advantageDetails.spawnedSquare === null) {
-          // Server explicitly said no square was available (spawnedSquare is null)
           setArcaneReinforcementSpawnedSquare(null);
           alert("🧙 Arcane Reinforcement: No empty squares available to place the extra bishop.");
           console.log('[ChessGame] Arcane Reinforcement: Skipped by server, no empty squares were available.');
         } else {
-          // spawnedSquare is missing entirely, undefined, or an empty string (which shouldn't happen for a valid square).
-          // This path indicates an unexpected issue in data or transmission if advantageDetails itself is present.
           setArcaneReinforcementSpawnedSquare(null);
-          // Alert the user that the advantage is active but there's an issue with the spawn location.
           alert("🧙 Arcane Reinforcement is active, but its effect might not apply correctly due to missing spawn details.");
           console.log('[ChessGame] Arcane Reinforcement active, but spawnedSquare was missing, undefined, or invalid in advantageDetails.');
         }
@@ -806,8 +818,9 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         setKnightmareActiveKnight(null);
         setKnightmarePossibleMoves([]);
       }
+      if (selectedPieceSquare) setSelectedPieceSquare(null); // Clear general selection
     }
-  }, [fen, color, restrictedToPieceType, knightmareActiveKnight, game]); 
+  }, [fen, color, restrictedToPieceType, knightmareActiveKnight, game, selectedPieceSquare]); 
 
 
   const onSquareClick = (squareClicked: Square) => {
@@ -865,62 +878,64 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     }
 
     if (myAdvantage?.id === "knightmare" && color && game.turn() === color[0]) {
-      console.log(`[KM DEBUG ChessGame] onSquareClick: Knightmare advantage is active for current player.`);
       const pieceOnClickedSquare = game.get(squareClicked);
-      console.log(`[KM DEBUG ChessGame] onSquareClick: Piece on clicked square ${squareClicked}: ${JSON.stringify(pieceOnClickedSquare)}`);
-
-      if (!knightmareActiveKnight) { 
-          console.log(`[KM DEBUG ChessGame] onSquareClick: No knightmareActiveKnight. Attempting to activate.`);
-          if (pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked on player's knight at ${squareClicked}. Checking canKnightUseKnightmare with state: ${JSON.stringify(knightmareState)}.`);
-              if (canKnightUseKnightmare(knightmareState)) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for ${squareClicked}. Getting possible moves.`);
-                  const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for ${squareClicked} (with state: ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
-                  setKnightmareActiveKnight(squareClicked);
-                  setKnightmarePossibleMoves(possibleMoves);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked}, knightmarePossibleMoves=${JSON.stringify(possibleMoves)}.`);
-              } else {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned false for ${squareClicked} with state ${JSON.stringify(knightmareState)}.`);
-                  setKnightmareActiveKnight(null);
-                  setKnightmarePossibleMoves([]);
-              }
+      if (!knightmareActiveKnight) {
+        if (pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
+          if (canKnightUseKnightmare(knightmareState)) {
+            const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
+            setKnightmareActiveKnight(squareClicked);
+            setKnightmarePossibleMoves(possibleMoves);
+            setSelectedPieceSquare(null); // Clear general selection
           } else {
-               console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked square ${squareClicked} is not a player's knight, or no piece. Resetting active knight.`);
-               setKnightmareActiveKnight(null);
-               setKnightmarePossibleMoves([]);
+            setKnightmareActiveKnight(null);
+            setKnightmarePossibleMoves([]);
           }
-      } else { 
-          console.log(`[KM DEBUG ChessGame] onSquareClick: knightmareActiveKnight is ${knightmareActiveKnight}.`);
-          if (knightmarePossibleMoves.includes(squareClicked as Square)) {
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is in knightmarePossibleMoves. Calling makeMove with isKnightmareMove=true.`);
-              makeMove(knightmareActiveKnight, squareClicked, true); 
-          } else { 
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is NOT in knightmarePossibleMoves. Deselecting or re-evaluating.`);
-              const previouslySelectedKnight = knightmareActiveKnight; 
-              setKnightmareActiveKnight(null);
-              setKnightmarePossibleMoves([]);
-              if (squareClicked !== previouslySelectedKnight && pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Re-evaluating for newly clicked knight ${squareClicked}.`);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Passing knightmareState: ${JSON.stringify(knightmareState)} to canKnightUseKnightmare for new selection.`);
-                   if (canKnightUseKnightmare(knightmareState)) {
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for new knight ${squareClicked}.`);
-                      const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for new knight ${squareClicked} (with state ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
-                      setKnightmareActiveKnight(squareClicked);
-                      setKnightmarePossibleMoves(possibleMoves);
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked} for new selection.`);
-                  } else {
-                       console.log(`[KM DEBUG ChessGame] onSquareClick: New knight ${squareClicked} cannot use Knightmare.`);
-                  }
-              } else if (squareClicked === previouslySelectedKnight) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked active Knightmare knight ${squareClicked} again to deselect.`);
-              } else {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is not a knight, so just deselecting previous active one.`);
-              }
+        } else {
+          setKnightmareActiveKnight(null);
+          setKnightmarePossibleMoves([]);
+        }
+      } else { // knightmareActiveKnight is set
+        if (knightmarePossibleMoves.includes(squareClicked as Square)) {
+          makeMove(knightmareActiveKnight, squareClicked, true);
+          // Knightmare states (activeKnight, possibleMoves) are reset inside makeMove or its callees upon successful KM move
+          setSelectedPieceSquare(null); // Clear general selection
+        } else {
+          const previouslySelectedKnight = knightmareActiveKnight;
+          setKnightmareActiveKnight(null);
+          setKnightmarePossibleMoves([]);
+          setSelectedPieceSquare(null); // Clear general selection
+          // Check if re-selecting another knight or the same knight
+          if (pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
+            if (canKnightUseKnightmare(knightmareState)) {
+              const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
+              setKnightmareActiveKnight(squareClicked);
+              setKnightmarePossibleMoves(possibleMoves);
+              // setSelectedPieceSquare(null) already called
+            }
           }
+        }
       }
-      return; 
+      return; // Knightmare logic handles the click
+    }
+
+    // General Piece Selection Logic (if not handled by special modes above)
+    if (game.turn() === color?.[0]) { 
+      if (selectedPieceSquare) { // A piece was previously selected
+        if (squareClicked === selectedPieceSquare) {
+          setSelectedPieceSquare(null); // User clicked the same piece: deselect
+        } else {
+          // User clicked a different square (potential target)
+          makeMove(selectedPieceSquare, squareClicked as Square); // Attempt the move
+          setSelectedPieceSquare(null); // Clear selection after the move attempt
+        }
+      } else { // No piece was previously selected
+        const piece = game.get(squareClicked);
+        if (piece && piece.color === color?.[0]) {
+          setSelectedPieceSquare(squareClicked); // Select the clicked piece if it's theirs
+        } else {
+          setSelectedPieceSquare(null); // Clicked empty or opponent's piece
+        }
+      }
     }
   };
   
@@ -1817,44 +1832,93 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           onPieceDrop={(from, to) => {
             if (isSacrificialBlessingActive) { 
                 alert("Sacrificial Blessing is active. Please click a piece then an empty square. Drag-and-drop is disabled for blessing.");
+                setSelectedPieceSquare(null); 
                 return false; 
             }
             if (isAwaitingSecondLcMove && lcFirstMoveDetails) {
                makeMove(from, to); 
+               setSelectedPieceSquare(null); 
                return true; 
             }
-            return !!makeMove(from, to); 
+            const result = makeMove(from, to);
+            setSelectedPieceSquare(null); 
+            return !!result; 
           }}
           boardWidth={500}
           boardOrientation={color === "black" ? "black" : "white"}
           customSquareStyles={(() => {
             let styles: { [key: string]: React.CSSProperties } = {};
 
-            // Knightmare Highlighting
-            // console.log(`[KM DEBUG ChessGame] customSquareStyles called. knightmareActiveKnight: ${knightmareActiveKnight}, knightmarePossibleMoves: ${JSON.stringify(knightmarePossibleMoves)}`);
+            // 1. General Ghost File Visuals
+            if (myGhostFile || opponentGhostFile) {
+                console.log(`[CL ChessGame.tsx customSquareStyles] GhostFile: Calling getGhostFileSquareStyles. MyGhost: ${myGhostFile}, OpponentGhost: ${opponentGhostFile}`);
+                const ghostFileVisualStyles = getGhostFileSquareStyles(
+                    myGhostFile,
+                    opponentGhostFile,
+                    color ? color[0] as 'w' | 'b' : 'w', // Default 'w' for safety
+                    fen
+                );
+                for (const square in ghostFileVisualStyles) {
+                    styles[square] = { ...(styles[square] || {}), ...ghostFileVisualStyles[square] };
+                }
+            }
+
+            // 2. Arcane Reinforcement highlight
+            if (arcaneReinforcementSpawnedSquare && myAdvantage?.id === 'arcane_reinforcement') {
+              styles[arcaneReinforcementSpawnedSquare] = {
+                ...(styles[arcaneReinforcementSpawnedSquare] || {}),
+                background: "rgba(100, 200, 100, 0.4)", 
+              };
+            }
+
+            // 3. Selected Piece Highlight
+            if (selectedPieceSquare) {
+              styles[selectedPieceSquare] = {
+                ...(styles[selectedPieceSquare] || {}),
+                background: "rgba(255, 255, 0, 0.5)", 
+              };
+            }
+
+            // 4. Knightmare Highlighting
             if (myAdvantage?.id === 'knightmare' && knightmareActiveKnight && color && game.turn() === color[0]) {
-               console.log(`[KM DEBUG ChessGame] customSquareStyles: Knightmare active. Highlighting ${knightmareActiveKnight} and moves: ${JSON.stringify(knightmarePossibleMoves)}`);
                styles[knightmareActiveKnight] = { 
-                 ...styles[knightmareActiveKnight], 
+                 ...(styles[knightmareActiveKnight] || {}), 
                  background: "rgba(255, 200, 0, 0.4)", 
                  boxShadow: "0 0 5px 2px rgba(255, 165, 0, 0.8)", 
                };
                knightmarePossibleMoves.forEach(sq => {
                    styles[sq] = { 
-                     ...styles[sq], 
-                  background: "rgba(240, 230, 140, 0.5)", // Existing Knightmare highlight
+                     ...(styles[sq] || {}), 
+                     background: "rgba(240, 230, 140, 0.5)", 
                      cursor: "pointer", 
                    };
                });
-            } else if (arcaneReinforcementSpawnedSquare && myAdvantage?.id === 'arcane_reinforcement') {
-              // Highlight for Arcane Reinforcement if the square is set
-              // No need to check color here as it's only set for the current player's advantage
-              styles[arcaneReinforcementSpawnedSquare] = {
-                ...styles[arcaneReinforcementSpawnedSquare], // Preserve other styles like Knightmare selection
-                background: "rgba(100, 200, 100, 0.4)", // A green highlight
-              };
             }
+            // Note: The 'else if' for arcaneReinforcementSpawnedSquare was removed from here
+            // as it's now handled independently above, allowing its style to merge with ghost file styles.
 
+            // 5. Ghost File Move Options
+            if (myAdvantage?.id === 'ghost_file' && myGhostFile && selectedPieceSquare && color && game.get(selectedPieceSquare)?.color === color[0] && game.turn() === color[0]) {
+                console.log(`[CL ChessGame.tsx customSquareStyles] GhostFile: Calling getGhostHighlightLegalMoves for ${selectedPieceSquare}`);
+                // if (knightmareActiveKnight !== selectedPieceSquare) { // Optional: Condition to prevent double-highlighting
+                    const ghostMoves = getGhostHighlightLegalMoves(
+                        fen,
+                        myGhostFile,
+                        selectedPieceSquare,
+                        color[0] as 'w' | 'b'
+                    );
+                    console.log(`[CL ChessGame.tsx customSquareStyles] GhostFile: Got ${ghostMoves.length} highlightable moves.`);
+                    ghostMoves.forEach(move => {
+                        styles[move.to] = {
+                            ...(styles[move.to] || {}),
+                            background: styles[move.to]?.background ?
+                                        `radial-gradient(circle, rgba(0, 200, 0, 0.7) 15%, transparent 18%), ${styles[move.to]?.background}` :
+                                        'radial-gradient(circle, rgba(0, 200, 0, 0.7) 15%, transparent 18%)',
+                            cursor: "pointer",
+                        };
+                    });
+                // }
+            }
 
             if (myAdvantage?.id === "queens_domain" && isQueensDomainToggleActive && queensDomainState && !queensDomainState.hasUsed && color && game.turn() === color[0]) {
               const playerQueenSquares: Square[] = [];
