@@ -16,7 +16,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "sacrificial_blessing", name: "Sacrificial Blessing", description: "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn.", rarity: "common"}, // done
   { id: "restless_king", name: "Restless King", description: "If your king moves, your opponent cannot give check on their next turn.", rarity: "common" }, // done
   { id: "queens_domain", name: "Queen’s Domain", description: "Your queen may pass through friendly pieces once per game.", rarity: "common", serverValidation: validateQueensDomainServerMove }, // done
-  { id: "coordinated_push", name: "Coordinated Push", description: "When two of your pawns are side by side toggle to move both forward in the same turn.", rarity: "common"},
+  { id: "coordinated_push", name: "Coordinated Push", description: "When two of your pawns are side by side toggle to move both forward in the same turn.", rarity: "common"}, // done
 
   // Rare (25%)
   { id: "pawn_ambush", name: "Pawn Ambush", description: "A pawn promotes on reaching 6th rank.", rarity: "rare" }, // done
@@ -31,11 +31,11 @@ export const ADVANTAGE_POOL: Advantage[] = [
 
   // Legendary (5%)
   { id: "second_wind", name: "Second Wind", description: "After checkmate, get one move to counter-mate.", rarity: "legendary" },
-  { id: "quantum_leap", name: "Quantum Leap", description: "Swap any two of your pieces once.", rarity: "legendary" },
+  { id: "quantum_leap", name: "Quantum Leap", description: "Swap any two of your pieces once. Doesn't count as a turn", rarity: "legendary" },
   { id: "secret_weapon", name: "Secret Weapon", description: "One pawn is secretly a queen in disguise.", rarity: "legendary" },
   { id: "hidden_heir", name: "Hidden Heir", description: "Select one piece before the game starts. This piece must be captured before the opponent can checkmate.", rarity: "legendary" },
   // Rotate in later{ id: "time_rewind", name: "Time Rewind", description: "Undo both players’ last full moves after a capture.", rarity: "legendary" },
   // Rotate in later{ id: "flash_forward", name: "Flash Forward", description: "Skip your opponent’s turn once. Time bends for you.", rarity: "legendary"},
-  { id: "doppelganger", name: "Doppelgänger", description: "Choose a piece to mimic the abilities of an enemy piece it's facing.", rarity: "legendary"},
+  // Rotate in later{ id: "doppelganger", name: "Doppelgänger", description: "Choose a piece to mimic the abilities of an enemy piece it's facing.", rarity: "legendary"},
   // Rotate in later{ id: "phantom_king", name: "Phantom King", description: "Your king is invisible to your opponent for the first 10 turns.", rarity: "legendary"},
 ];

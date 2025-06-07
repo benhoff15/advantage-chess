@@ -51,10 +51,31 @@ import { shouldShowQueenlyCompensationToast } from '../logic/advantages/queenlyC
 import { Move } from "chess.js";
 import { CoordinatedPushState } from "../../shared/types";
 import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from "../logic/advantages/coordinatedPush";
+import { shouldHidePiece } from "../logic/advantages/cloak";
+import { PlayerAdvantageStates, CloakState } from "../../shared/types"; 
 // Square is already imported from chess.js
 
 // Define the type for the chess.js Move object if not already available globally
 // type ChessJsMove = ReturnType<Chess['move']>; // This is a more precise way if Chess['move'] is well-typed
+
+function getMaskedFenForOpponent(
+  fen: string,
+  opponentAdvantageStates: PlayerAdvantageStates | null,
+  color: "white" | "black" | null
+) {
+  if (!fen || !opponentAdvantageStates?.cloak || !color) return fen;
+  const chess = new Chess(fen);
+  const { pieceId } = opponentAdvantageStates.cloak;
+  const square = pieceId.slice(0, 2);
+  const type = pieceId[2];
+  const myColorChar = color === "white" ? "w" : "b";
+  const piece = chess.get(square as Square);
+  if (piece && piece.type === type && piece.color !== myColorChar) {
+    chess.remove(square as Square);
+    return chess.fen();
+  }
+  return fen;
+}
 
 export default function ChessGame() {
   const { roomId } = useParams(); //This gets /game/:roomId
@@ -104,11 +125,13 @@ const [restrictedToPieceType, setRestrictedToPieceType] = useState<string | null
 const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null);
 const [queensDomainState, setQueensDomainState] = useState<QueensDomainClientState | null>(null);
 const [isQueensDomainToggleActive, setIsQueensDomainToggleActive] = useState(false);
-const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | null>(null); // Knightmare state
+const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | null>(null);
 const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | null>(null);
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
 const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUsed: boolean } | null>(null);
 const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = useState<string | null>(null);
+  const [opponentAdvantageStates, setOpponentAdvantageStates] = useState<PlayerAdvantageStates | null>(null);
+  const [myCloakDetails, setMyCloakDetails] = useState<CloakState | null>(null); // For displaying my own cloak status
 
   // Coordinated Push State Variables
   const [isCoordinatedPushActive, setIsCoordinatedPushActive] = useState(false);
@@ -216,7 +239,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     if (secondPawnSelected) setSecondPawnSelected(null);
   }
 
-  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); 
+  // Reset myCloakDetails if advantage changes and is not cloak
+  if (myAdvantage?.id !== 'cloak') {
+    if (myCloakDetails) setMyCloakDetails(null);
+  } else {
+    // If advantage IS cloak, but details are not yet set (e.g. from advantageAssigned), initialize or ensure it's null
+    if (!myCloakDetails) setMyCloakDetails(null); 
+  }
+
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // myCloakDetails is intentionally not in dependency array to avoid loops with its own setter
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -290,15 +321,20 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     type ReceiveMoveEventData = {
       move: ServerMovePayload; 
       updatedShieldedPiece?: ShieldedPieceInfo;
+      whitePlayerAdvantageStatesFull?: PlayerAdvantageStates; // Added
+      blackPlayerAdvantageStatesFull?: PlayerAdvantageStates; // Added
     };
 
     const handleReceiveMove = (data: ReceiveMoveEventData) => {
       const receivedMove = data.move;
       const updatedShieldedPieceFromServer = data.updatedShieldedPiece;
+      const whiteFullStates = data.whitePlayerAdvantageStatesFull;
+      const blackFullStates = data.blackPlayerAdvantageStatesFull;
 
       console.log(
         `[ChessGame handleReceiveMove] START. Current color state: ${color}. Received move:`,
         receivedMove,
+        "WhiteFullStates:", whiteFullStates, "BlackFullStates:", blackFullStates
       );
       if (updatedShieldedPieceFromServer) {
         console.log(
@@ -306,6 +342,40 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           updatedShieldedPieceFromServer,
         );
       }
+
+      // Update opponent and own full advantage states
+      let myCurrentFullStates: PlayerAdvantageStates | null | undefined = null;
+      let oppFullStates: PlayerAdvantageStates | null | undefined = null;
+
+      if (color === "white") {
+          myCurrentFullStates = whiteFullStates;
+          oppFullStates = blackFullStates;
+      } else if (color === "black") {
+          myCurrentFullStates = blackFullStates;
+          oppFullStates = whiteFullStates;
+      }
+
+      if (oppFullStates) {
+          setOpponentAdvantageStates(oppFullStates);
+          console.log("[Cloak Client ChessGame] Opponent cloak state set:", oppFullStates.cloak);
+      }
+
+      if (myCurrentFullStates) {
+          // console.log("[ChessGame handleReceiveMove] Updating my own full states:", myCurrentFullStates); // Too verbose
+          setKnightmareState(myCurrentFullStates.knightmare || null);
+          setQueensDomainState(myCurrentFullStates.queens_domain || null);
+          setMyCloakDetails(myCurrentFullStates.cloak || null);
+          setRoyalEscortState(myCurrentFullStates.royalEscort || null);
+          setLightningCaptureState(myCurrentFullStates.lightningCapture || { used: false });
+          setMyOpeningSwapState(myCurrentFullStates.openingSwap || null);
+          setQueenlyCompensationState(myCurrentFullStates.queenly_compensation || null);
+          setCoordinatedPushState(myCurrentFullStates.coordinatedPush || null);
+          // Note: PawnAmbushState is not explicitly managed with useState yet, but could be added if needed locally.
+          // ArcaneReinforcement (spawnedSquare) is handled in advantageAssigned.
+          // SacrificialBlessing state (hasUsed) is managed by hasUsedMySacrificialBlessing.
+      }
+      console.log(`[Cloak Client ChessGame - handleReceiveMove] Post-move states updated. Opponent Cloak: ${JSON.stringify(oppFullStates?.cloak)}. My Cloak: ${JSON.stringify(myCurrentFullStates?.cloak)}`);
+
 
       if (isAwaitingSecondLcMove) {
         console.warn(
@@ -655,6 +725,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           alert("🧙 Arcane Reinforcement is active, but its effect might not apply correctly due to missing spawn details.");
           console.log('[ChessGame] Arcane Reinforcement active, but spawnedSquare was missing, undefined, or invalid in advantageDetails.');
         }
+      }
+      // Handle Cloak advantage assignment for self
+      if (data.advantage.id === 'cloak' && data.advantageDetails?.cloak) {
+        setMyCloakDetails(data.advantageDetails.cloak);
+        console.log(`[Cloak Client ChessGame - handleAdvantageAssigned] Cloak assigned to me. Details:`, JSON.stringify(data.advantageDetails.cloak));
+      } else if (data.advantage.id === 'cloak' && !data.advantageDetails?.cloak) {
+        // This case might happen if details are missing, though server should provide them
+        setMyCloakDetails(null); // Or some default initial state if appropriate
+        console.warn(`[Cloak Client ChessGame - handleAdvantageAssigned] Cloak assigned but details missing.`);
       }
     };
     socket.on("advantageAssigned", handleAdvantageAssigned);
@@ -2096,9 +2175,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         </div>
       )}
 
+      {myCloakDetails && (
+        <div style={{ padding: '5px', margin: '5px 0', background: '#d0e0f0', border: '1px solid #a0c0d0', borderRadius: '3px' }}>
+          <p>Your Cloak: Piece ID <strong>{myCloakDetails.pieceId}</strong>, Turns Remaining: <strong>{myCloakDetails.turnsRemaining}</strong></p>
+        </div>
+      )}
+
       <div style={{ position: "relative" }}>
         <Chessboard
-          position={fen}
+          position={getMaskedFenForOpponent(fen, opponentAdvantageStates, color)}
           onSquareClick={onSquareClick}
           onPieceDrop={(from, to) => {
             if (isSacrificialBlessingActive) { 
@@ -2242,6 +2327,25 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
             return styles;
           })()}
+          customPieces={React.useMemo(() => {
+  const pieces: { [square: string]: React.ReactNode } = {};
+  if (!game || !color || !opponentAdvantageStates?.cloak) return pieces;
+
+  const board = game.board();
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const squareInfo = board[r][c];
+      if (squareInfo) {
+        const square = String.fromCharCode(97 + c) + (8 - r); // e.g., "e4"
+        const pieceDetails = { type: squareInfo.type, color: squareInfo.color };
+        if (shouldHidePiece(square, pieceDetails, opponentAdvantageStates, color)) {
+          pieces[square] = null;
+        }
+      }
+    }
+  }
+  return pieces;
+}, [fen, game, opponentAdvantageStates, color])} // Ensure `fen` is a dependency if `game.board()` depends on it implicitly via `game` object updates.
         />
       </div>
 

@@ -1,7 +1,8 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move, Square } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState, CloakState } from "../shared/types";
+import { assignCloakedPiece, handleCloakTurn, removeCloakOnCapture } from "./logic/advantages/cloak";
 import { applyArcaneReinforcement } from "./logic/advantages/arcaneReinforcement";
 import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
@@ -86,6 +87,8 @@ export type RoomState = {
   blackArcaneReinforcementSpawnedSquare?: Square | null;
   whiteCoordinatedPushState?: CoordinatedPushState;
   blackCoordinatedPushState?: CoordinatedPushState;
+  whiteCloakState?: CloakState;
+  blackCloakState?: CloakState;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -172,9 +175,11 @@ export function setupSocketHandlers(io: Server) {
           blackArcaneReinforcementSpawnedSquare: null,
           whiteCoordinatedPushState: { active: false, usedThisTurn: false },
           blackCoordinatedPushState: { active: false, usedThisTurn: false },
+          whiteCloakState: undefined, 
+          blackCloakState: undefined,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), and Coordinated Push ({ active: false, usedThisTurn: false }).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), and Cloak (undefined).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -207,6 +212,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackArcaneReinforcementSpawnedSquare === undefined) room.blackArcaneReinforcementSpawnedSquare = null;
         if (!room.whiteCoordinatedPushState) room.whiteCoordinatedPushState = { active: false, usedThisTurn: false };
         if (!room.blackCoordinatedPushState) room.blackCoordinatedPushState = { active: false, usedThisTurn: false };
+        if (room.whiteCloakState === undefined) room.whiteCloakState = undefined;
+        if (room.blackCloakState === undefined) room.blackCloakState = undefined;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -264,6 +271,31 @@ export function setupSocketHandlers(io: Server) {
         room.fen = initialGame.fen();
         console.log(`[joinRoom] Definitive starting FEN for room ${roomId} after all pre-game advantages: ${room.fen}`);
 
+    // Initialize Cloak State for White Player
+    if (room.whiteAdvantage?.id === 'cloak' && room.white) {
+        const gameInstanceForCloakAssignment = new Chess(room.fen!); // Use the final starting FEN
+        const pieceId = assignCloakedPiece(gameInstanceForCloakAssignment, 'white');
+        if (pieceId) {
+            room.whiteCloakState = { pieceId, turnsRemaining: 10 };
+            console.log(`[Cloak Init] White player (${room.white}) assigned Cloak. Piece: ${pieceId}, Turns: 20`);
+        } else {
+            console.error(`[Cloak Init] Failed to assign cloaked piece for white player ${room.white}.`);
+        }
+    }
+
+    // Initialize Cloak State for Black Player
+    if (room.blackAdvantage?.id === 'cloak' && room.black) {
+        const gameInstanceForCloakAssignment = new Chess(room.fen!); // Use the final starting FEN
+        const pieceId = assignCloakedPiece(gameInstanceForCloakAssignment, 'black');
+        if (pieceId) {
+            room.blackCloakState = { pieceId, turnsRemaining: 10 };
+            console.log(`[Cloak Init] Black player (${room.black}) assigned Cloak. Piece: ${pieceId}, Turns: 20`);
+        } else {
+            console.error(`[Cloak Init] Failed to assign cloaked piece for black player ${room.black}.`);
+        }
+    }
+    if (room.whiteCloakState) console.log(`[Cloak Server socketHandlers - GameStart] White cloak state initialized:`, JSON.stringify(room.whiteCloakState));
+    if (room.blackCloakState) console.log(`[Cloak Server socketHandlers - GameStart] Black cloak state initialized:`, JSON.stringify(room.blackCloakState));
 
         // White player's advantage processing & emitting advantageAssigned
         if (room.whiteAdvantage && room.white) {
@@ -316,6 +348,12 @@ export function setupSocketHandlers(io: Server) {
                 console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to white. Payload:', JSON.stringify(whitePayload));
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", whitePayload);
                 console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
+    } else if (room.whiteAdvantage.id === "cloak" && room.whiteCloakState) {
+        io.sockets.sockets.get(room.white)?.emit("advantageAssigned", {
+            advantage: room.whiteAdvantage,
+            advantageDetails: { cloak: room.whiteCloakState } // Send cloak state
+        });
+        console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for white:`, JSON.stringify(room.whiteCloakState));
             } else { // Standard advantage emission for white
                 io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
             }
@@ -373,6 +411,12 @@ export function setupSocketHandlers(io: Server) {
                 console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to black. Payload:', JSON.stringify(blackPayload));
                 socket.emit("advantageAssigned", blackPayload);
                 console.log(`Black player (${socket.id}) assigned Arcane Reinforcement. Spawned at: ${room.blackArcaneReinforcementSpawnedSquare}`);
+    } else if (room.blackAdvantage.id === "cloak" && room.blackCloakState) {
+        socket.emit("advantageAssigned", {
+            advantage: room.blackAdvantage,
+            advantageDetails: { cloak: room.blackCloakState } // Send cloak state
+        });
+        console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for black:`, JSON.stringify(room.blackCloakState));
             } else { // Standard advantage emission for black
                 socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
@@ -882,6 +926,12 @@ export function setupSocketHandlers(io: Server) {
               move: {
                 ...receivedMove,
                 afterFen: room.fen,
+              },
+              whitePlayerAdvantageStatesFull: {
+                cloak: room.whiteCloakState || null,
+              },
+              blackPlayerAdvantageStatesFull: {
+                cloak: room.blackCloakState || null,
               }
             });
 
@@ -1245,11 +1295,128 @@ export function setupSocketHandlers(io: Server) {
             }
             // --- End Add effects to broadcast ---
 
-            const payload = {
-                move: moveDataForBroadcast,
-                ...(updatedShieldedPieceForEmit && { updatedShieldedPiece: updatedShieldedPieceForEmit })
+            // ----- CLOAK ADVANTAGE LOGIC -----
+            // Ensure this runs only if the move was successful and the board state is final for the turn.
+            if (moveResult && room.fen === serverGame.fen()) { 
+                const gameCtxForCloak = new Chess(room.fen!); // Use a fresh Chess instance with the latest FEN
+
+                // Handle Cloak for the player who moved (senderColor)
+                if (senderColor === 'white' && room.whiteCloakState) {
+                    console.log(`[Cloak Server socketHandlers - sendMove] White player ${senderColor} moved. Current cloak: ${JSON.stringify(room.whiteCloakState)}. Move from: ${moveResult.from}, to: ${moveResult.to}, piece: ${moveResult.piece}`);
+                    // Check if the moved piece IS the cloaked piece and update its ID
+                    if (room.whiteCloakState.pieceId && moveResult.piece) { // Ensure pieceId and moveResult.piece exist
+                        const expectedOldPieceId = `${moveResult.from}${moveResult.piece.toLowerCase()}`;
+                        if (room.whiteCloakState.pieceId === expectedOldPieceId) {
+                            const newPieceId = `${moveResult.to}${moveResult.piece.toLowerCase()}`;
+                            console.log(`[Cloak Move] White's cloaked piece ${room.whiteCloakState.pieceId} moved from ${moveResult.from} to ${moveResult.to}. New ID: ${newPieceId}`);
+                            room.whiteCloakState.pieceId = newPieceId;
+                        }
+                    }
+                    // Now, handle turns (it will use the potentially updated pieceId for logging if any)
+                    const previousTurnsWhite = room.whiteCloakState.turnsRemaining; // room.whiteCloakState might be deleted by handleCloakTurn if turns run out
+                    const tempWhiteStates: PlayerAdvantageStates = { cloak: { ...room.whiteCloakState } }; 
+                    handleCloakTurn(tempWhiteStates); 
+                    room.whiteCloakState = tempWhiteStates.cloak; 
+                    if (room.whiteCloakState) { // Check if cloak still exists
+                        if (previousTurnsWhite !== room.whiteCloakState.turnsRemaining) {
+                            console.log('[Cloak Turns] White player cloak updated. Turns remaining: ' + room.whiteCloakState.turnsRemaining + '. ID: ' + room.whiteCloakState.pieceId);
+                        }
+                    } else if (previousTurnsWhite > 0) { // Cloak existed before but now it's gone
+                        console.log('[Cloak Turns] White player cloak expired. Turns remaining: 0. ID: ' + tempWhiteStates.cloak?.pieceId);
+                    }
+                } else if (senderColor === 'black' && room.blackCloakState) {
+                    console.log(`[Cloak Server socketHandlers - sendMove] Black player ${senderColor} moved. Current cloak: ${JSON.stringify(room.blackCloakState)}. Move from: ${moveResult.from}, to: ${moveResult.to}, piece: ${moveResult.piece}`);
+                    // Check if the moved piece IS the cloaked piece and update its ID
+                    if (room.blackCloakState.pieceId && moveResult.piece) { // Ensure pieceId and moveResult.piece exist
+                        const expectedOldPieceId = `${moveResult.from}${moveResult.piece.toLowerCase()}`;
+                        if (room.blackCloakState.pieceId === expectedOldPieceId) {
+                            const newPieceId = `${moveResult.to}${moveResult.piece.toLowerCase()}`;
+                            console.log(`[Cloak Move] Black's cloaked piece ${room.blackCloakState.pieceId} moved from ${moveResult.from} to ${moveResult.to}. New ID: ${newPieceId}`);
+                            room.blackCloakState.pieceId = newPieceId;
+                        }
+                    }
+                    // Now, handle turns
+                    const previousTurnsBlack = room.blackCloakState.turnsRemaining;
+                    const tempBlackStates: PlayerAdvantageStates = { cloak: { ...room.blackCloakState } };
+                    handleCloakTurn(tempBlackStates);
+                    room.blackCloakState = tempBlackStates.cloak;
+                    if (room.blackCloakState) { // Check if cloak still exists
+                        if (previousTurnsBlack !== room.blackCloakState.turnsRemaining) {
+                             console.log('[Cloak Turns] Black player cloak updated. Turns remaining: ' + room.blackCloakState.turnsRemaining + '. ID: ' + room.blackCloakState.pieceId);
+                        }
+                    } else if (previousTurnsBlack > 0) { // Cloak existed before but now it's gone
+                        console.log('[Cloak Turns] Black player cloak expired. Turns remaining: 0. ID: ' + tempBlackStates.cloak?.pieceId);
+                    }
+                }
+
+                // Handle Cloak removal on capture for the opponent
+                if (moveResult.captured && opponentColor) {
+                    // gameCtxForCloak is already based on the FEN after the capture.
+                    if (opponentColor === 'white' && room.whiteCloakState) {
+                        const tempOpponentStates: PlayerAdvantageStates = { cloak: { ...room.whiteCloakState } };
+                        // Pass gameCtxForCloak which is already the state *after* the capture.
+                        removeCloakOnCapture(tempOpponentStates, moveResult.to as Square, gameCtxForCloak); 
+                        if (!tempOpponentStates.cloak && room.whiteCloakState) { // Check if cloak was removed
+                            console.log('[Cloak Capture] Opponent White cloaked piece ' + room.whiteCloakState.pieceId + ' captured on ' + moveResult.to + '. Cloak removed.');
+                            room.whiteCloakState = undefined; 
+                        } else {
+                            // This branch might not be strictly necessary if removeCloakOnCapture directly modifies tempOpponentStates.cloak
+                            // and playerStates.cloak is then set to tempOpponentStates.cloak.
+                            // However, explicit re-assignment is safer if removeCloakOnCapture might return a new object or modified state.
+                            room.whiteCloakState = tempOpponentStates.cloak; 
+                        }
+                    } else if (opponentColor === 'black' && room.blackCloakState) {
+                        const tempOpponentStates: PlayerAdvantageStates = { cloak: { ...room.blackCloakState } };
+                        removeCloakOnCapture(tempOpponentStates, moveResult.to as Square, gameCtxForCloak);
+                        if (!tempOpponentStates.cloak && room.blackCloakState) { // Check if cloak was removed
+                            console.log('[Cloak Capture] Opponent Black cloaked piece ' + room.blackCloakState.pieceId + ' captured on ' + moveResult.to + '. Cloak removed.');
+                            room.blackCloakState = undefined; 
+                        } else {
+                            room.blackCloakState = tempOpponentStates.cloak;
+                        }
+                    }
+                }
+            }
+            // ----- END CLOAK ADVANTAGE LOGIC -----
+
+            // Construct full advantage states for emission. This must be done before emitting "receiveMove".
+            const whiteCurrentAdvantageStates: PlayerAdvantageStates = {
+                ...(room.whiteAdvantage?.id === 'royal_escort' && room.whiteRoyalEscortState && { royalEscort: room.whiteRoyalEscortState }),
+                ...(room.whiteAdvantage?.id === 'lightning_capture' && room.whiteLightningCaptureState && { lightningCapture: room.whiteLightningCaptureState }),
+                ...(room.whiteAdvantage?.id === 'opening_swap' && room.whiteOpeningSwapState && { openingSwap: room.whiteOpeningSwapState }),
+                ...(room.whiteAdvantage?.id === 'pawn_ambush' && room.whitePawnAmbushState && { pawnAmbush: room.whitePawnAmbushState }),
+                ...(room.whiteAdvantage?.id === 'queens_domain' && room.whiteQueensDomainState && { queens_domain: room.whiteQueensDomainState }),
+                ...(room.whiteAdvantage?.id === 'knightmare' && room.whiteKnightmareState && { knightmare: room.whiteKnightmareState }),
+                ...(room.whiteAdvantage?.id === 'queenly_compensation' && room.whiteQueenlyCompensationState && { queenly_compensation: room.whiteQueenlyCompensationState }),
+                ...(room.whiteAdvantage?.id === 'coordinated_push' && room.whiteCoordinatedPushState && { coordinatedPush: room.whiteCoordinatedPushState }),
+                ...(room.whiteCloakState && { cloak: room.whiteCloakState }), 
             };
-            io.to(roomId).emit("receiveMove", payload);
+            const blackCurrentAdvantageStates: PlayerAdvantageStates = {
+                ...(room.blackAdvantage?.id === 'royal_escort' && room.blackRoyalEscortState && { royalEscort: room.blackRoyalEscortState }),
+                ...(room.blackAdvantage?.id === 'lightning_capture' && room.blackLightningCaptureState && { lightningCapture: room.blackLightningCaptureState }),
+                ...(room.blackAdvantage?.id === 'opening_swap' && room.blackOpeningSwapState && { openingSwap: room.blackOpeningSwapState }),
+                ...(room.blackAdvantage?.id === 'pawn_ambush' && room.blackPawnAmbushState && { pawnAmbush: room.blackPawnAmbushState }),
+                ...(room.blackAdvantage?.id === 'queens_domain' && room.blackQueensDomainState && { queens_domain: room.blackQueensDomainState }),
+                ...(room.blackAdvantage?.id === 'knightmare' && room.blackKnightmareState && { knightmare: room.blackKnightmareState }),
+                ...(room.blackAdvantage?.id === 'queenly_compensation' && room.blackQueenlyCompensationState && { queenly_compensation: room.blackQueenlyCompensationState }),
+                ...(room.blackAdvantage?.id === 'coordinated_push' && room.blackCoordinatedPushState && { coordinatedPush: room.blackCoordinatedPushState }),
+                ...(room.blackCloakState && { cloak: room.blackCloakState }), 
+            };
+
+            const finalPayloadForReceiveMove = {
+                move: moveDataForBroadcast,
+                ...(updatedShieldedPieceForEmit && { updatedShieldedPiece: updatedShieldedPieceForEmit }),
+                whitePlayerAdvantageStatesFull: {
+                    ...whiteCurrentAdvantageStates,
+                    cloak: room.whiteCloakState || null, // Always include cloak, even if null
+                },
+                blackPlayerAdvantageStatesFull: {
+                    ...blackCurrentAdvantageStates,
+                    cloak: room.blackCloakState || null, // Always include cloak, even if null
+                },
+            };
+            console.log(`[Cloak Server socketHandlers - sendMove] Emitting finalPayloadForReceiveMove. WhiteFullStates: ${JSON.stringify(finalPayloadForReceiveMove.whitePlayerAdvantageStatesFull)}, BlackFullStates: ${JSON.stringify(finalPayloadForReceiveMove.blackPlayerAdvantageStatesFull)}`);
+            io.to(roomId).emit("receiveMove", finalPayloadForReceiveMove);
           }
         } else {
           // This block executes if moveResult is null.
@@ -1317,7 +1484,7 @@ export function setupSocketHandlers(io: Server) {
               if (senderColor === 'white') room.whiteQueensDomainState = playerQueensDomainState;
               else room.blackQueensDomainState = playerQueensDomainState;
             }
-            // ---- End Queen's Domain State Update Post-Move ----
+            // ---- End Queen's Domain State Update ----
             // This (the QD state update block) was moved to be inside the `if (moveResult && room.fen === serverGame.fen())` block,
             // which is fine as it ensures the state is updated only for truly committed moves.
             // The specialServerEffect addition needs to be before the payload emission,

@@ -38,6 +38,11 @@ export interface CoordinatedPushState {
   usedThisTurn: boolean;
 }
 
+export interface CloakState {
+  pieceId: string;          // e.g., "wNb1" (white Knight on b1) or "bRd8" (black Rook on d8)
+  turnsRemaining: number;   // starts at 20, decrements each of the owner’s moves
+}
+
 export interface PlayerAdvantageStates {
   royalEscort?: RoyalEscortState;
   lightningCapture?: LightningCaptureState;
@@ -57,6 +62,7 @@ export interface PlayerAdvantageStates {
     spawnedSquare?: string; // e.g., 'e2', 'f7'
   };
   // Add other advantage states here as needed
+  cloak?: CloakState; // Add this line
 }
 
 export interface SacrificialBlessingPendingState {
