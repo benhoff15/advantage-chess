@@ -783,7 +783,7 @@ export function setupSocketHandlers(io: Server) {
 
           if (moveResult && lcResult.nextFen) {
             // Validation successful, update the main serverGame and room FEN
-            serverGame.load(lcResult.nextFen); // Load the final state into serverGame
+            serverGame.load(lcResult.nextFen);
             room.fen = lcResult.nextFen;     // Update authoritative room FEN
 
             // Mark advantage as used
@@ -845,39 +845,54 @@ export function setupSocketHandlers(io: Server) {
             moveResult = null; 
           }
         } else if (receivedMove.special === 'coordinated_push' && receivedMove.from && receivedMove.to && receivedMove.secondFrom && receivedMove.secondTo) {
+          console.log("[CP DEBUG] Received coordinated_push move from client:", receivedMove);
+
           if (currentPlayerAdvantage?.id !== 'coordinated_push' || !playerCoordinatedPushState) {
+            console.warn("[CP DEBUG] Coordinated Push not available or state missing for player.");
             socket.emit("invalidMove", { message: "Coordinated Push not available or state missing.", move: clientMoveData });
             return;
           }
           if (playerCoordinatedPushState.usedThisTurn) {
+            console.warn("[CP DEBUG] Coordinated Push already used this turn.");
             socket.emit("invalidMove", { message: "Coordinated Push already used this turn.", move: clientMoveData });
             return;
           }
 
-          const firstMovePayload: ServerMovePayload = { from: receivedMove.from, to: receivedMove.to }; 
-          const secondMovePayload: ServerMovePayload = { from: receivedMove.secondFrom, to: receivedMove.secondTo };
-          
           const cpValidationResult = validateCoordinatedPushServerMove(
-            new Chess(originalFenBeforeAttempt!), 
-            senderColor!,
-            firstMovePayload,
-            secondMovePayload,
+            serverGame,
+            senderColor,
+            { from: receivedMove.from, to: receivedMove.to },
+            { from: receivedMove.secondFrom, to: receivedMove.secondTo },
             originalFenBeforeAttempt!
           );
 
           if (cpValidationResult.isValid && cpValidationResult.nextFen) {
             serverGame.load(cpValidationResult.nextFen);
-            room.fen = serverGame.fen();
+            room.fen = cpValidationResult.nextFen;
+
+            // Mark advantage as used
             playerCoordinatedPushState.usedThisTurn = true;
-            // For Coordinated Push, moveResult isn't a single chess.js Move. 
-            // The client submitted both parts; server validated.
-            // We'll use a simplified representation or rely on afterFen.
-            // Setting moveResult to a simple object to indicate success.
-            moveResult = { from: receivedMove.from, to: receivedMove.to, flags: 'cp', piece: 'p', color: senderColor![0] } as any; 
-            console.log(`[sendMove] Coordinated Push by ${senderColor} validated. New FEN: ${room.fen}. State: ${JSON.stringify(playerCoordinatedPushState)}`);
+            if (senderColor === 'white') {
+              room.whiteCoordinatedPushState = playerCoordinatedPushState;
+            } else {
+              room.blackCoordinatedPushState = playerCoordinatedPushState;
+            }
+
+            io.to(roomId).emit("receiveMove", {
+              move: {
+                ...receivedMove,
+                afterFen: room.fen,
+              }
+            });
+
+            console.log("[CP DEBUG] Coordinated Push move processed and emitted. Returning to prevent fallback logic.");
+            return;
           } else {
-            socket.emit("invalidMove", { message: cpValidationResult.error || "Coordinated Push invalid.", move: clientMoveData });
-            moveResult = null;
+            socket.emit("invalidMove", {
+              message: cpValidationResult.error || "Coordinated Push move invalid or illegal.",
+              move: receivedMove
+            });
+            return;
           }
         } else { 
           // Standard move attempt
@@ -1282,7 +1297,7 @@ export function setupSocketHandlers(io: Server) {
 
             // ---- Queen's Domain State Update Post-Move ----
             const playerAdvantageForQD = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
-            // Use playerQueensDomainState which was fetched earlier and initialized if necessary
+            // Use playerQueensDomainState which was fetched and initialized if necessary
             if (playerAdvantageForQD?.id === 'queens_domain' && playerQueensDomainState) {
               if (clientMoveData.special === 'queens_domain_move' && !playerQueensDomainState.hasUsed && moveResult) { // Check moveResult to ensure QD was successful
                 console.log(`[SocketHandlers] Queen's Domain used by ${senderColor} for move. Updating state.`);
@@ -1290,7 +1305,6 @@ export function setupSocketHandlers(io: Server) {
                 playerQueensDomainState.isActive = false;
                 // Add a flag to the broadcasted move so client knows QD was consumed this move
                 // This assumes moveDataForBroadcast is accessible here or modified on the payload object directly
-                // This needs to be integrated with where `moveDataForBroadcast` is defined and used in the `receiveMove` emission.
                 // For now, let's assume we modify `payload.move` before emitting.
                 // The `payload` is defined in the `else { // NOT deflected }` block.
                 // This logic should be *inside* that block, before `io.to(roomId).emit("receiveMove", payload);`

@@ -235,6 +235,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             setFirstPushDetails(null);
             setEligibleSecondPawns([]);
             setSecondPawnSelected(null);
+            console.log("[CP DEBUG] Coordinated Push state reset after usedThisTurn=true");
         }
       }
     };
@@ -862,6 +863,8 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   const onSquareClick = (squareClicked: Square) => {
     // Coordinated Push Click-Click Logic
     if (awaitingSecondPush && firstPushDetails && color) {
+        console.log("[CP DEBUG] Awaiting second push. Clicked:", squareClicked, "FirstPushDetails:", firstPushDetails, "EligibleSecondPawns:", eligibleSecondPawns, "SecondPawnSelected:", secondPawnSelected);
+
         const pieceOnSquare = game.get(squareClicked);
 
         if (secondPawnSelected) { // Second click: target square for the selected second pawn
@@ -877,6 +880,8 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             const toRank = parseInt(squareClicked[1]);
             const expectedToRank = fromRank + (firstPushDetails.color === 'w' ? 1 : -1);
 
+            console.log("[CP DEBUG] Second pawn selected. From:", secondPawnSelected, "To:", squareClicked, "ExpectedToRank:", expectedToRank);
+
             if (squareClicked[0] === secondPawnSelected[0] && toRank === expectedToRank && !game.get(squareClicked)) {
                 const finalSecondMove = { 
                     ...tempSecondMove, 
@@ -887,7 +892,18 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                     after: '' 
                 } as Move; 
 
-                if (validateCoordinatedPushClientMove(firstPushDetails, finalSecondMove)) {
+                const valid = validateCoordinatedPushClientMove(firstPushDetails, finalSecondMove);
+                console.log("[CP DEBUG] Validating second move:", finalSecondMove, "Result:", valid);
+
+                if (valid) {
+                    console.log("[CP DEBUG] Emitting coordinated_push move to server:", {
+                        from: firstPushDetails.from,
+                        to: firstPushDetails.to,
+                        secondFrom: finalSecondMove.from,
+                        secondTo: finalSecondMove.to,
+                        special: 'coordinated_push',
+                        color: color,
+                    });
                     socket.emit("sendMove", {
                         roomId,
                         move: {
@@ -908,16 +924,33 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                     setEligibleSecondPawns([]);
                     setSecondPawnSelected(null);
                 } else {
-                    alert("Invalid second pawn move for Coordinated Push. Client validation failed.");
+                    console.warn("[CP DEBUG] Invalid second pawn move for Coordinated Push. Client validation failed. Cancelling Coordinated Push.");
+                    if (fenSnapshotBeforeMove.current) {
+                        game.load(fenSnapshotBeforeMove.current); // Revert local board
+                        setFen(game.fen());
+                    }
+                    setIsCoordinatedPushActive(false);
+                    setAwaitingSecondPush(false);
+                    setFirstPushDetails(null);
+                    setEligibleSecondPawns([]);
                 }
             } else {
-                alert("Invalid target square for the second pawn. Must be one square forward and empty.");
+                console.warn("[CP DEBUG] Invalid target square for the second pawn. Must be one square forward and empty. Cancelling Coordinated Push.");
+                if (fenSnapshotBeforeMove.current) {
+                    game.load(fenSnapshotBeforeMove.current); // Revert local board
+                    setFen(game.fen());
+                }
+                setIsCoordinatedPushActive(false);
+                setAwaitingSecondPush(false);
+                setFirstPushDetails(null);
+                setEligibleSecondPawns([]);
             }
             setSecondPawnSelected(null); 
             return; 
 
         } else if (eligibleSecondPawns.includes(squareClicked as Square)) { 
             if (pieceOnSquare && pieceOnSquare.type === 'p' && pieceOnSquare.color === color[0]) {
+                console.log("[CP DEBUG] Selecting second pawn for Coordinated Push:", squareClicked);
                 setSecondPawnSelected(squareClicked as Square);
             }
             return; 
@@ -1536,36 +1569,35 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         // Handling the FIRST part of Coordinated Push
         if (isCoordinatedPushActive && !awaitingSecondPush && !coordinatedPushState?.usedThisTurn && color) {
             const piece = game.get(from as Square);
+            console.log("[CP DEBUG] Attempting first pawn push. From:", from, "To:", to, "Piece:", piece);
+
             if (piece?.type === 'p' && piece.color === color[0]) {
                 const tempGame = new Chess(game.fen());
-                // Use promotion 'q' just for validation, it won't stick if it's not a promotion move
                 const potentialFirstMove = tempGame.move({ from: from as Square, to: to as Square, promotion: 'q' });
 
-                // Check if it's a valid one-square pawn push (not a capture, not two squares)
+                console.log("[CP DEBUG] First pawn push move result:", potentialFirstMove);
+
                 if (potentialFirstMove && potentialFirstMove.piece === 'p' && 
                     !potentialFirstMove.captured && 
-                    (potentialFirstMove.flags.includes('n') || potentialFirstMove.flags.includes('np')) && // 'n' for normal, 'np' for non-pawn promotion (though we check piece type)
+                    (potentialFirstMove.flags.includes('n') || potentialFirstMove.flags.includes('np')) &&
                     Math.abs(parseInt(potentialFirstMove.to[1]) - parseInt(potentialFirstMove.from[1])) === 1 &&
-                    potentialFirstMove.from[0] === potentialFirstMove.to[0] // Stays in the same file
+                    potentialFirstMove.from[0] === potentialFirstMove.to[0]
                 ) {
                     const gameForEligibleCheck = new Chess(game.fen());
                     const eligiblePawns = isEligibleCoordinatedPushPair(gameForEligibleCheck, potentialFirstMove);
 
+                    console.log("[CP DEBUG] Eligible second pawns after first push:", eligiblePawns);
+
                     if (eligiblePawns.length > 0) {
                         fenSnapshotBeforeMove.current = game.fen(); // Save current FEN
-                        game.move(potentialFirstMove); // Apply first move locally for visual feedback
-                        setFen(game.fen());
 
                         setFirstPushDetails(potentialFirstMove);
                         setEligibleSecondPawns(eligiblePawns);
                         setAwaitingSecondPush(true);
-                        // Do NOT send to server yet. Do NOT call standard move emission here.
+                        console.log("[CP DEBUG] First push applied locally. Awaiting second push. State updated.");
                         return null; // Prevent standard move processing
                     } else {
-                        // It was a valid pawn push, but no eligible second pawn.
-                        // Allow it to be processed as a standard move if Coordinated Push cannot be completed.
-                        // No special handling here, will fall through to standard move logic.
-                        // Alerting might be too noisy if user just wants to push one pawn.
+                        console.log("[CP DEBUG] Valid pawn push, but no eligible second pawn. Will fall through to standard move logic.");
                     }
                 }
             }
@@ -1573,18 +1605,33 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
         // Handling the SECOND part of Coordinated Push (if drag-and-drop is used for the second pawn)
         if (awaitingSecondPush && firstPushDetails && color && from && to) {
+            console.log("[CP DEBUG] Drag-drop for second pawn. From:", from, "To:", to, "EligibleSecondPawns:", eligibleSecondPawns);
+
             if (eligibleSecondPawns.includes(from as Square)) {
-                const piece = game.get(from as Square); // game instance here has first move applied
+                const piece = game.get(from as Square);
                 if (piece?.type === 'p' && piece.color === color[0]) {
-                    const tempGameForSecondMoveValidation = new Chess(game.fen()); // game.fen() is after the first push
+                    const tempGameForSecondMoveValidation = new Chess(game.fen());
                     const potentialSecondMove = tempGameForSecondMoveValidation.move({from: from as Square, to: to as Square, promotion: 'q'});
+
+                    console.log("[CP DEBUG] Second pawn move result:", potentialSecondMove);
 
                     if (potentialSecondMove && potentialSecondMove.piece === 'p' && 
                         !potentialSecondMove.captured &&
                         Math.abs(parseInt(potentialSecondMove.to[1]) - parseInt(potentialSecondMove.from[1])) === 1 &&
-                        potentialSecondMove.from[0] === potentialSecondMove.to[0] // Stays in same file
+                        potentialSecondMove.from[0] === potentialSecondMove.to[0]
                     ) {
-                        if (validateCoordinatedPushClientMove(firstPushDetails, potentialSecondMove)) {
+                        const valid = validateCoordinatedPushClientMove(firstPushDetails, potentialSecondMove);
+                        console.log("[CP DEBUG] Validating second move (drag-drop):", potentialSecondMove, "Result:", valid);
+
+                        if (valid) {
+                            console.log("[CP DEBUG] Emitting coordinated_push move to server (drag-drop):", {
+                                from: firstPushDetails.from,
+                                to: firstPushDetails.to,
+                                secondFrom: potentialSecondMove.from,
+                                secondTo: potentialSecondMove.to,
+                                special: 'coordinated_push',
+                                color: color,
+                            });
                             socket.emit("sendMove", {
                                 roomId,
                                 move: {
@@ -1603,42 +1650,50 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                             setAwaitingSecondPush(false);
                             setFirstPushDetails(null);
                             setEligibleSecondPawns([]);
-                            setSecondPawnSelected(null);
+                            setSecondPawnSelected(null); // Ensures reset after successful drag-drop
                             
                             game.move(potentialSecondMove); // Apply second move to main game instance
                             setFen(game.fen());
                             // Check for game over after applying the full move
                             if (game.isCheckmate()) {
-                                const winnerLogic = game.turn() === "w" ? "black" : "white";
-                                setGameOverMessage(`${winnerLogic} wins by checkmate`);
-                                socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
-                            } // Add other game over checks if necessary (draw, stalemate etc.)
+                              const winnerLogic = game.turn() === "w" ? "black" : "white";
+                              setGameOverMessage(`${winnerLogic} wins by checkmate`);
+                              socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
+                            }
                             return potentialSecondMove; 
                         } else {
-                            alert("Client validation for Coordinated Push (second move) failed.");
+                            console.warn("[CP DEBUG] Client validation for Coordinated Push (second move) failed.");
                             game.load(fenSnapshotBeforeMove.current); // Revert first local move
-                            setFen(game.fen());
+                            setFen(fenSnapshotBeforeMove.current);
+                            setIsCoordinatedPushActive(false); // Reset toggle
                             setAwaitingSecondPush(false);
                             setFirstPushDetails(null);
                             setEligibleSecondPawns([]);
+                            setSecondPawnSelected(null); // Reset selected pawn
                             return null;
                         }
                     } else {
-                        alert("Second move for Coordinated Push is not a valid one-square pawn push.");
-                        // No need to revert here if the move itself was invalid on the current board, Chessboard component usually handles visual revert.
-                        // However, if the move was "valid" but didn't meet CP criteria, we might need to revert.
-                        // For now, if it's not a valid pawn push, let it be handled by standard Chessboard behavior (snap back)
+                        console.warn("[CP DEBUG] Second move for Coordinated Push is not a valid one-square pawn push. Cancelling Coordinated Push.");
+                        game.load(fenSnapshotBeforeMove.current); // Revert first local move
+                        setFen(fenSnapshotBeforeMove.current);
+                        setIsCoordinatedPushActive(false); // Reset toggle
+                        setAwaitingSecondPush(false);
+                        setFirstPushDetails(null);
+                        setEligibleSecondPawns([]);
+                        setSecondPawnSelected(null); // Reset selected pawn
+                        return null; 
                     }
                 }
             } else {
                 // Dragged piece is not an eligible second pawn. Cancel Coordinated Push attempt.
-                alert("The piece you tried to move is not an eligible second pawn for Coordinated Push. Cancelling.");
+                console.warn("[CP DEBUG] The piece you tried to move is not an eligible second pawn for Coordinated Push. Cancelling.");
                 game.load(fenSnapshotBeforeMove.current); // Revert first local move
-                setFen(game.fen());
+                setFen(fenSnapshotBeforeMove.current);
                 setIsCoordinatedPushActive(false); // Also turn off the toggle
                 setAwaitingSecondPush(false);
                 setFirstPushDetails(null);
                 setEligibleSecondPawns([]);
+                setSecondPawnSelected(null); // Ensure reset
             }
             return null; // Prevent standard move processing if we were awaiting second push
         }

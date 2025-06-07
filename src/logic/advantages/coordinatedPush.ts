@@ -1,6 +1,7 @@
 import { Chess, Move, Square, Piece } from 'chess.js'; // Ensure Piece is imported
 
 export function isEligibleCoordinatedPushPair(game: Chess, firstMove: Move): Square[] {
+    console.log("[CP DEBUG] isEligibleCoordinatedPushPair called with firstMove:", firstMove);
     // Ensure firstMove itself is valid before using its properties extensively
     if (!firstMove || typeof firstMove.from !== 'string' || typeof firstMove.to !== 'string' || typeof firstMove.piece !== 'string' || typeof firstMove.color !== 'string') {
         return [];
@@ -62,56 +63,53 @@ export function isEligibleCoordinatedPushPair(game: Chess, firstMove: Move): Squ
         }
     }
 
+    console.log("[CP DEBUG] Eligible pawns found:", eligiblePawns);
     return eligiblePawns;
 }
 
-/**
- * Validates if the client's proposed coordinated push move (two pawn moves) is valid.
- * This is a lighter validation compared to server-side, mainly for UI feedback.
- * @param firstMove The first pawn's move.
- * @param secondMove The second pawn's move.
- * @returns True if the moves appear to be a valid coordinated push, false otherwise.
- */
 export function validateCoordinatedPushClientMove(firstMove: Move, secondMove: Move): boolean {
-  // Check if both pieces are pawns
-  if (firstMove.piece !== 'p' || secondMove.piece !== 'p') {
-    return false;
-  }
+    console.log("[CP DEBUG] validateCoordinatedPushClientMove called. First:", firstMove, "Second:", secondMove);
+    // Check if both pieces are pawns
+    if (firstMove.piece !== 'p' || secondMove.piece !== 'p') {
+        return false;
+    }
 
-  // Check if both pawns are of the same color
-  if (firstMove.color !== secondMove.color) {
-    return false;
-  }
+    // Check if both pawns are of the same color
+    if (firstMove.color !== secondMove.color) {
+        return false;
+    }
 
-  // Check if pawns are on the same rank
-  if (firstMove.from[1] !== secondMove.from[1]) {
-    return false;
-  }
+    // Check if pawns are on the same rank
+    if (firstMove.from[1] !== secondMove.from[1]) {
+        return false;
+    }
 
-  // Check if pawns are on adjacent files
-  if (Math.abs(firstMove.from.charCodeAt(0) - secondMove.from.charCodeAt(0)) !== 1) {
-    return false;
-  }
+    // Check if pawns are on adjacent files
+    if (Math.abs(firstMove.from.charCodeAt(0) - secondMove.from.charCodeAt(0)) !== 1) {
+        return false;
+    }
 
-  const playerColor = firstMove.color;
-  const expectedFirstToRank = parseInt(firstMove.from[1]) + (playerColor === 'w' ? 1 : -1);
-  const expectedSecondToRank = parseInt(secondMove.from[1]) + (playerColor === 'w' ? 1 : -1);
+    const playerColor = firstMove.color;
+    const expectedFirstToRank = parseInt(firstMove.from[1]) + (playerColor === 'w' ? 1 : -1);
+    const expectedSecondToRank = parseInt(secondMove.from[1]) + (playerColor === 'w' ? 1 : -1);
 
-  // Check if the first pawn moved one square forward
-  if (parseInt(firstMove.to[1]) !== expectedFirstToRank || firstMove.from[0] !== firstMove.to[0]) {
-    return false;
-  }
+    // Check if the first pawn moved one square forward
+    if (parseInt(firstMove.to[1]) !== expectedFirstToRank || firstMove.from[0] !== firstMove.to[0]) {
+        return false;
+    }
 
-  // Check if the second pawn moved one square forward
-  if (parseInt(secondMove.to[1]) !== expectedSecondToRank || secondMove.from[0] !== secondMove.to[0]) {
-    return false;
-  }
-  
-  // Check that moves are not captures
-  if (firstMove.flags.includes('c') || firstMove.flags.includes('e') ||
-      secondMove.flags.includes('c') || secondMove.flags.includes('e')) {
-    return false;
-  }
+    // Check if the second pawn moved one square forward
+    if (parseInt(secondMove.to[1]) !== expectedSecondToRank || secondMove.from[0] !== secondMove.to[0]) {
+        return false;
+    }
+    
+    // Check that moves are not captures
+    if (firstMove.flags.includes('c') || firstMove.flags.includes('e') ||
+        secondMove.flags.includes('c') || secondMove.flags.includes('e')) {
+        return false;
+    }
 
-  return true;
+    const result = true;
+    console.log("[CP DEBUG] validateCoordinatedPushClientMove result:", result);
+    return result;
 }

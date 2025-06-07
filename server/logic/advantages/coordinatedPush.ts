@@ -2,12 +2,15 @@ import { Chess, Move, PieceSymbol, Square } from 'chess.js';
 import { ServerMovePayload } from '../../../shared/types';
 
 export function validateCoordinatedPushServerMove(
-  game: Chess, // This is the main game instance, used for context but not for temp moves
+  game: Chess,
   playerColor: 'white' | 'black',
   firstMovePayload: ServerMovePayload,
   secondMovePayload: ServerMovePayload,
   currentFen: string
 ): { isValid: boolean; nextFen?: string; error?: string } {
+  console.log("[CP DEBUG SERVER] Received coordinated_push. currentFen:", currentFen);
+  console.log("[CP DEBUG SERVER] FirstMovePayload:", firstMovePayload, "SecondMovePayload:", secondMovePayload);
+
   const playerPieceColor = playerColor === 'white' ? 'w' : 'b';
 
   // --- Helper to check for one square forward move ---
@@ -33,18 +36,21 @@ export function validateCoordinatedPushServerMove(
   // This is done BEFORE sequential validation to catch structural issues first.
   const initialGame = new Chess();
   try {
-      initialGame.load(currentFen);
+    initialGame.load(currentFen);
+    console.log("[CP DEBUG SERVER] initialGame loaded FEN:", initialGame.fen());
   } catch (e: any) {
-      return { isValid: false, error: "Internal server error: FEN load failure for initial check." };
+    console.error("[CP DEBUG SERVER] Error loading FEN:", e, "FEN was:", currentFen);
   }
 
   const pawn1Initial = initialGame.get(firstMovePayload.from as Square);
   const pawn2Initial = initialGame.get(secondMovePayload.from as Square);
 
   if (!pawn1Initial || pawn1Initial.type !== 'p' || pawn1Initial.color !== playerPieceColor) {
+    console.warn("[CP DEBUG] Cross-move: First piece invalid.", pawn1Initial);
     return { isValid: false, error: 'Cross-move: First piece was not a valid pawn initially.' };
   }
   if (!pawn2Initial || pawn2Initial.type !== 'p' || pawn2Initial.color !== playerPieceColor) {
+    console.warn("[CP DEBUG] Cross-move: Second piece invalid.", pawn2Initial);
     return { isValid: false, error: 'Cross-move: Second piece was not a valid pawn initially.' };
   }
 
@@ -64,12 +70,13 @@ export function validateCoordinatedPushServerMove(
   }
 
   const firstMoveToPieceInitial = initialGame.get(firstMovePayload.to as Square);
-  if (firstMoveToPieceInitial !== null && typeof firstMoveToPieceInitial !== 'undefined') {
+  console.log("[CP DEBUG SERVER] Checking if target square for first pawn is empty:", firstMovePayload.to, "Piece found:", firstMoveToPieceInitial);
+  if (firstMoveToPieceInitial) {
     return { isValid: false, error: "Cross-move: Target square for first pawn was not initially empty." };
   }
 
   const secondMoveToPieceInitial = initialGame.get(secondMovePayload.to as Square);
-  if (secondMoveToPieceInitial !== null && typeof secondMoveToPieceInitial !== 'undefined') {
+  if (secondMoveToPieceInitial) {
     return { isValid: false, error: "Cross-move: Target square for second pawn was not initially empty." };
   }
 
@@ -91,20 +98,25 @@ export function validateCoordinatedPushServerMove(
     return { isValid: false, error: 'First move is not a one-square forward push.' };
   }
   const firstMoveTargetSequential = validationGame.get(firstMovePayload.to as Square);
-  if (firstMoveTargetSequential !== null) {
+  // FIX: Accept both null and undefined as empty
+  if (firstMoveTargetSequential) {
     return { isValid: false, error: 'Target square for first move is not empty.' };
   }
 
-  const firstMoveResult = validationGame.move({
-    from: firstMovePayload.from as Square,
-    to: firstMovePayload.to as Square,
-  });
-  if (!firstMoveResult) {
-    return { isValid: false, error: 'First move is invalid according to chess rules.' };
+  console.log("[CP DEBUG SERVER] FEN before first move:", validationGame.fen(), "turn:", validationGame.turn());
+  const firstMoveResult = validationGame.move({ from: firstMovePayload.from, to: firstMovePayload.to });
+  console.log("[CP DEBUG SERVER] FEN after first move:", validationGame.fen(), "turn:", validationGame.turn(), "moveResult:", firstMoveResult);
+
+  // After firstMoveResult and before attempting secondMoveResult
+  if (firstMoveResult) {
+    // Force turn back to the original player for the second move
+    const parts = validationGame.fen().split(' ');
+    parts[1] = playerPieceColor; // 'w' or 'b'
+    validationGame.load(parts.join(' '));
+    console.log("[CP DEBUG SERVER] Forced turn back to", playerPieceColor, "FEN now:", validationGame.fen());
   }
 
-
-  // 3. Validate secondMovePayload (after the first move is notionally made on validationGame)
+  // 3. Validate secondMovePayload (before the second move is made)
   const secondPawnSequential = validationGame.get(secondMovePayload.from as Square);
   if (!secondPawnSequential || secondPawnSequential.type !== 'p' || secondPawnSequential.color !== playerPieceColor) {
     return { isValid: false, error: 'Second piece is not a valid pawn for coordinated push after first move.' };
@@ -113,22 +125,24 @@ export function validateCoordinatedPushServerMove(
     return { isValid: false, error: 'Second move is not a one-square forward push.' };
   }
   const secondMoveTargetSequential = validationGame.get(secondMovePayload.to as Square);
-  if (secondMoveTargetSequential !== null) {
+  // FIX: Accept both null and undefined as empty
+  if (secondMoveTargetSequential) {
     return { isValid: false, error: 'Target square for second move is not empty.' };
   }
 
-  const secondMoveResult = validationGame.move({
-    from: secondMovePayload.from as Square,
-    to: secondMovePayload.to as Square,
-  });
-  if (!secondMoveResult) {
-    return { isValid: false, error: 'Second move is invalid according to chess rules after first move.' };
+  // Now apply the second move
+  let secondMoveResult;
+  try {
+    secondMoveResult = validationGame.move({ from: secondMovePayload.from, to: secondMovePayload.to });
+  } catch (e) {
+    console.error("[CP DEBUG SERVER] Error applying second coordinated push move:", e);
+    return { isValid: false, error: "Second coordinated push move was invalid: " + (e instanceof Error ? e.message : String(e)) };
   }
+  console.log("[CP DEBUG SERVER] FEN after second move:", validationGame.fen(), "turn:", validationGame.turn(), "moveResult:", secondMoveResult);
   
-  // Ensure moves are not captures (chess.js move object would have a 'captured' flag)
-  // The .get(target) === null checks above already ensure this for push moves.
-
   // 5. If all validations pass
   const finalResult = { isValid: true, nextFen: validationGame.fen() };
+
+  console.log("[CP DEBUG] Coordinated Push server validation result: isValid =", finalResult.isValid, "nextFen:", finalResult.nextFen, "error:", (finalResult as any).error ?? null);
   return finalResult;
 }
