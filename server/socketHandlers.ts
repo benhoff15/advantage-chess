@@ -21,7 +21,8 @@ import { validateRoyalEscortServerMove } from './logic/advantages/royalEscort';
 import { validateLightningCaptureServerMove } from './logic/advantages/lightningCapture';
 import { validateQueensDomainServerMove } from './logic/advantages/queensDomain'; // QD Import
 import { validateKnightmareServerMove } from './logic/advantages/knightmare';
-import { LightningCaptureState, PawnAmbushState } from "../shared/types"; // Added PawnAmbushState
+import { LightningCaptureState, PawnAmbushState, CoordinatedPushState } from "../shared/types"; // Added PawnAmbushState and CoordinatedPushState
+import { validateCoordinatedPushServerMove } from './logic/advantages/coordinatedPush'; // Added
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
 
@@ -83,6 +84,8 @@ export type RoomState = {
   blackQueenlyCompensationState?: { hasUsed: boolean };
   whiteArcaneReinforcementSpawnedSquare?: Square | null;
   blackArcaneReinforcementSpawnedSquare?: Square | null;
+  whiteCoordinatedPushState?: CoordinatedPushState;
+  blackCoordinatedPushState?: CoordinatedPushState;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -167,9 +170,11 @@ export function setupSocketHandlers(io: Server) {
           blackQueenlyCompensationState: { hasUsed: false },
           whiteArcaneReinforcementSpawnedSquare: null,
           blackArcaneReinforcementSpawnedSquare: null,
+          whiteCoordinatedPushState: { active: false, usedThisTurn: false },
+          blackCoordinatedPushState: { active: false, usedThisTurn: false },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), and Arcane Reinforcement (null).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), and Coordinated Push ({ active: false, usedThisTurn: false }).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -200,6 +205,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackAdvantage?.id === "queenly_compensation" && (!room.blackQueenlyCompensationState || typeof room.blackQueenlyCompensationState.hasUsed === 'undefined')) room.blackQueenlyCompensationState = { hasUsed: false };
         if (room.whiteArcaneReinforcementSpawnedSquare === undefined) room.whiteArcaneReinforcementSpawnedSquare = null;
         if (room.blackArcaneReinforcementSpawnedSquare === undefined) room.blackArcaneReinforcementSpawnedSquare = null;
+        if (!room.whiteCoordinatedPushState) room.whiteCoordinatedPushState = { active: false, usedThisTurn: false };
+        if (!room.blackCoordinatedPushState) room.blackCoordinatedPushState = { active: false, usedThisTurn: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -498,6 +505,8 @@ export function setupSocketHandlers(io: Server) {
         let currentPlayerLightningCaptureState_LC: LightningCaptureState | undefined;
         let playerQueensDomainState: { isActive: boolean; hasUsed: boolean } | undefined;
         let currentPlayerKnightmareState: { hasUsed: boolean } | undefined;
+        let playerCoordinatedPushState: CoordinatedPushState | undefined;
+        const currentPlayerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
 
 
         if (senderColor === 'white') {
@@ -506,6 +515,8 @@ export function setupSocketHandlers(io: Server) {
             currentPlayerRoyalEscortState_RE = room.whiteRoyalEscortState;
             currentPlayerLightningCaptureState_LC = room.whiteLightningCaptureState;
             playerQueensDomainState = room.whiteQueensDomainState;
+            currentPlayerKnightmareState = room.whiteKnightmareState; // Added this line
+            playerCoordinatedPushState = room.whiteCoordinatedPushState;
         } else if (senderColor === 'black') {
             currentPlayerAdvantageState_FB = room.blackFocusedBishopState;
             currentPlayerRooksMoved_CB = room.blackRooksMoved;
@@ -513,6 +524,7 @@ export function setupSocketHandlers(io: Server) {
             currentPlayerLightningCaptureState_LC = room.blackLightningCaptureState;
             playerQueensDomainState = room.blackQueensDomainState;
             currentPlayerKnightmareState = room.blackKnightmareState;
+            playerCoordinatedPushState = room.blackCoordinatedPushState;
         }
         
         // Fallback initialization for states if they are somehow missing
@@ -526,6 +538,10 @@ export function setupSocketHandlers(io: Server) {
                  console.log(`[sendMove] Initializing/resetting whiteKnightmareState to {hasUsed: false} due to missing or malformed state.`);
                  currentPlayerKnightmareState = room.whiteKnightmareState = { hasUsed: false };
             }
+            if (room.whiteAdvantage?.id === "coordinated_push" && !playerCoordinatedPushState) {
+                playerCoordinatedPushState = room.whiteCoordinatedPushState = { active: false, usedThisTurn: false };
+                console.log(`[sendMove] Initializing whiteCoordinatedPushState due to missing state.`);
+            }
         } else if (senderColor === 'black') {
             if (room.blackAdvantage?.id === "focused_bishop" && !currentPlayerAdvantageState_FB) currentPlayerAdvantageState_FB = room.blackFocusedBishopState = { focusedBishopUsed: false };
             if (room.blackAdvantage?.id === "corner_blitz" && !currentPlayerRooksMoved_CB) currentPlayerRooksMoved_CB = room.blackRooksMoved = { a1: false, h1: false, a8: false, h8: false };
@@ -535,6 +551,10 @@ export function setupSocketHandlers(io: Server) {
             if (room.blackAdvantage?.id === "knightmare" && (!currentPlayerKnightmareState || typeof currentPlayerKnightmareState.hasUsed === 'undefined')) {
                 console.log(`[sendMove] Initializing/resetting blackKnightmareState to {hasUsed: false} due to missing or malformed state.`);
                 currentPlayerKnightmareState = room.blackKnightmareState = { hasUsed: false };
+            }
+            if (room.blackAdvantage?.id === "coordinated_push" && !playerCoordinatedPushState) {
+                playerCoordinatedPushState = room.blackCoordinatedPushState = { active: false, usedThisTurn: false };
+                console.log(`[sendMove] Initializing blackCoordinatedPushState due to missing state.`);
             }
         }
 
@@ -823,6 +843,41 @@ export function setupSocketHandlers(io: Server) {
               move: clientMoveData
             });
             moveResult = null; 
+          }
+        } else if (receivedMove.special === 'coordinated_push' && receivedMove.from && receivedMove.to && receivedMove.secondFrom && receivedMove.secondTo) {
+          if (currentPlayerAdvantage?.id !== 'coordinated_push' || !playerCoordinatedPushState) {
+            socket.emit("invalidMove", { message: "Coordinated Push not available or state missing.", move: clientMoveData });
+            return;
+          }
+          if (playerCoordinatedPushState.usedThisTurn) {
+            socket.emit("invalidMove", { message: "Coordinated Push already used this turn.", move: clientMoveData });
+            return;
+          }
+
+          const firstMovePayload: ServerMovePayload = { from: receivedMove.from, to: receivedMove.to }; 
+          const secondMovePayload: ServerMovePayload = { from: receivedMove.secondFrom, to: receivedMove.secondTo };
+          
+          const cpValidationResult = validateCoordinatedPushServerMove(
+            new Chess(originalFenBeforeAttempt!), 
+            senderColor!,
+            firstMovePayload,
+            secondMovePayload,
+            originalFenBeforeAttempt!
+          );
+
+          if (cpValidationResult.isValid && cpValidationResult.nextFen) {
+            serverGame.load(cpValidationResult.nextFen);
+            room.fen = serverGame.fen();
+            playerCoordinatedPushState.usedThisTurn = true;
+            // For Coordinated Push, moveResult isn't a single chess.js Move. 
+            // The client submitted both parts; server validated.
+            // We'll use a simplified representation or rely on afterFen.
+            // Setting moveResult to a simple object to indicate success.
+            moveResult = { from: receivedMove.from, to: receivedMove.to, flags: 'cp', piece: 'p', color: senderColor![0] } as any; 
+            console.log(`[sendMove] Coordinated Push by ${senderColor} validated. New FEN: ${room.fen}. State: ${JSON.stringify(playerCoordinatedPushState)}`);
+          } else {
+            socket.emit("invalidMove", { message: cpValidationResult.error || "Coordinated Push invalid.", move: clientMoveData });
+            moveResult = null;
           }
         } else { 
           // Standard move attempt
@@ -1161,6 +1216,18 @@ export function setupSocketHandlers(io: Server) {
             } else if (ambushAppliedThisTurn) {
                 moveDataForBroadcast.promotion = 'q'; // Explicitly state queen promotion due to ambush
             }
+
+            // Coordinated Push broadcast effect (if successful and was a CP move)
+            if (receivedMove.special === 'coordinated_push' && moveResult && playerCoordinatedPushState?.usedThisTurn) {
+                const currentCPS = senderColor === 'white' ? room.whiteCoordinatedPushState : room.blackCoordinatedPushState;
+                if (currentCPS) { 
+                    moveDataForBroadcast.updatedAdvantageStates = {
+                        ...moveDataForBroadcast.updatedAdvantageStates,
+                        coordinatedPush: { ...currentCPS } 
+                    };
+                    console.log(`[sendMove] Coordinated Push by ${senderColor}: Attaching updatedAdvantageStates to broadcast: ${JSON.stringify(moveDataForBroadcast.updatedAdvantageStates)}`);
+                }
+            }
             // --- End Add effects to broadcast ---
 
             const payload = {
@@ -1243,6 +1310,32 @@ export function setupSocketHandlers(io: Server) {
             // and after the QD state is updated.
             // The current placement of specialServerEffect addition (just above) should be correct
             // relative to the payload emission.
+
+            // ---- Reset usedThisTurn for Coordinated Push for the NEXT player ----
+            // This happens after a successful move by the current player. serverGame.turn() now reflects the next player.
+            const nextPlayerColorChar = serverGame.turn(); // 'w' or 'b'
+            const nextPlayerColor = nextPlayerColorChar === 'w' ? 'white' : 'black';
+            let cpStateResetForNextPlayer: Partial<PlayerAdvantageStates> = {};
+            let nextPlayerSocketId: string | undefined = undefined;
+
+            if (nextPlayerColor === 'white' && room.whiteAdvantage?.id === 'coordinated_push' && room.whiteCoordinatedPushState?.usedThisTurn) {
+                room.whiteCoordinatedPushState.usedThisTurn = false;
+                console.log(`[SocketHandlers sendMove] Resetting Coordinated Push usedThisTurn for white player (next turn).`);
+                cpStateResetForNextPlayer.coordinatedPush = { ...room.whiteCoordinatedPushState };
+                nextPlayerSocketId = room.white;
+            } else if (nextPlayerColor === 'black' && room.blackAdvantage?.id === 'coordinated_push' && room.blackCoordinatedPushState?.usedThisTurn) {
+                room.blackCoordinatedPushState.usedThisTurn = false;
+                console.log(`[SocketHandlers sendMove] Resetting Coordinated Push usedThisTurn for black player (next turn).`);
+                cpStateResetForNextPlayer.coordinatedPush = { ...room.blackCoordinatedPushState };
+                nextPlayerSocketId = room.black;
+            }
+
+            // Send targeted update if a reset occurred and the next player is connected
+            if (nextPlayerSocketId && Object.keys(cpStateResetForNextPlayer).length > 0) {
+                io.to(nextPlayerSocketId).emit("advantageStateUpdated", cpStateResetForNextPlayer);
+                console.log(`[SocketHandlers sendMove] Sent targeted advantageStateUpdated for Coordinated Push reset to ${nextPlayerColor} (${nextPlayerSocketId}).`);
+            }
+            // ---- End Coordinated Push Reset for Next Player ----
         }
 
       });

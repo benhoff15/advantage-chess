@@ -23,10 +23,10 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "arcane_reinforcement",
-    name: "Arcane Reinforcement",
-    description: "Start with an extra bishop placed randomly.",
-    rarity: "rare"
+  { id: "coordinated_push",
+    name: "Coordinated Push",
+    description: "When two of your pawns are side by side toggle to move both forward in the same turn.",
+    rarity: "common"
   },
   { 
     id: "royal_escort",

@@ -49,6 +49,9 @@ import {
 } from "../logic/advantages/knightmare";
 import { shouldShowQueenlyCompensationToast } from '../logic/advantages/queenlyCompensation';
 import { Move } from "chess.js";
+import { CoordinatedPushState } from "../../shared/types";
+import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from "../logic/advantages/coordinatedPush";
+// Square is already imported from chess.js
 
 // Define the type for the chess.js Move object if not already available globally
 // type ChessJsMove = ReturnType<Chess['move']>; // This is a more precise way if Chess['move'] is well-typed
@@ -107,6 +110,14 @@ const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>
 const [queenlyCompensationState, setQueenlyCompensationState] = useState<{ hasUsed: boolean } | null>(null);
 const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = useState<string | null>(null);
 
+  // Coordinated Push State Variables
+  const [isCoordinatedPushActive, setIsCoordinatedPushActive] = useState(false);
+  const [coordinatedPushState, setCoordinatedPushState] = useState<CoordinatedPushState | null>(null);
+  const [awaitingSecondPush, setAwaitingSecondPush] = useState<boolean>(false);
+  const [firstPushDetails, setFirstPushDetails] = useState<Move | null>(null);
+  const [eligibleSecondPawns, setEligibleSecondPawns] = useState<Square[]>([]);
+  const [secondPawnSelected, setSecondPawnSelected] = useState<Square | null>(null);
+
   const {
     isSacrificialBlessingActive,
     availablePieces: availablePiecesForBlessing,
@@ -142,13 +153,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       setIsAwaitingSecondLcMove(false);
       setLcPossibleSecondMoves([]);
       setLcFirstMoveDetails(null);
-      // Note: The if(lcSecondMoveResolver) block was here, it's now fully removed.
-      // The associated state `lcSecondMoveResolver` itself is also removed.
     }
 
   if (myAdvantage?.id === "opening_swap") {
-    setMyOpeningSwapState({ hasSwapped: false }); // Initialize local state for UI tracking
-    // Show prompt only if game hasn't started and swap not used
+    setMyOpeningSwapState({ hasSwapped: false }); 
     if (game.history().length === 0 && !myOpeningSwapState?.hasSwapped) {
       setShowOpeningSwapPrompt(true);
     }
@@ -159,39 +167,24 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   if (myAdvantage?.id !== "royal_decree" && hasUsedRoyalDecree) {
     setHasUsedRoyalDecree(false); 
   }
-  // Queen's Domain advantage initialization/reset
   if (myAdvantage?.id === "queens_domain") {
-    // Initial state will be set by server or handleAdvantageAssigned.
-    // Ensure toggle is off if advantage changes to QD.
-    // setIsQueensDomainToggleActive(false); // This is handled by the 'else' part or specific state updates.
   } else {
-    if (queensDomainState) setQueensDomainState(null); // Clear state if advantage is not QD
-    if (isQueensDomainToggleActive) setIsQueensDomainToggleActive(false); // Reset toggle
+    if (queensDomainState) setQueensDomainState(null); 
+    if (isQueensDomainToggleActive) setIsQueensDomainToggleActive(false); 
   }
 
   if (myAdvantage?.id === "knightmare") {
-    // Initialize the core Knightmare state if it's not already set (e.g., advantage just switched to Knightmare)
-    if (!knightmareState) { // Check if knightmareState itself is null
+    if (!knightmareState) { 
         setKnightmareState({ hasUsed: false });
-        console.log('[KM DEBUG ChessGame] useEffect: Knightmare newly active. Initializing knightmareState to { hasUsed: false }.');
-        // DO NOT reset knightmareActiveKnight or knightmarePossibleMoves here.
-        // They should only be reset if the advantage changes AWAY from knightmare,
-        // or by other specific UI interactions (like making a move or deselecting).
-    } else {
-        console.log('[KM DEBUG ChessGame] useEffect: Knightmare remains active. Current state:', knightmareState);
     }
   } else {
-      // Knightmare is NOT the current advantage. Clear all its related states.
-      if (knightmareState !== null) { // Only update if there's a change to make
-        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmareState.');
+      if (knightmareState !== null) { 
         setKnightmareState(null);
       }
       if (knightmareActiveKnight !== null) {
-        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmareActiveKnight.');
         setKnightmareActiveKnight(null);
       }
       if (knightmarePossibleMoves.length > 0) {
-        console.log('[KM DEBUG ChessGame] useEffect: Knightmare no longer active. Resetting knightmarePossibleMoves.');
         setKnightmarePossibleMoves([]);
       }
   }
@@ -205,19 +198,43 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   if (myAdvantage?.id !== "arcane_reinforcement") {
     if (arcaneReinforcementSpawnedSquare) setArcaneReinforcementSpawnedSquare(null);
   }
-  // Note: Arcane Reinforcement's spawnedSquare is set via handleAdvantageAssigned,
-  // and doesn't need direct initialization here beyond resetting if the advantage changes.
 
-  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // Added arcaneReinforcementSpawnedSquare dependency
+  // Coordinated Push advantage initialization/reset
+  if (myAdvantage?.id === 'coordinated_push') {
+    setCoordinatedPushState({ active: false, usedThisTurn: false });
+    setIsCoordinatedPushActive(false);
+    setAwaitingSecondPush(false);
+    setFirstPushDetails(null);
+    setEligibleSecondPawns([]);
+    setSecondPawnSelected(null);
+  } else {
+    if (coordinatedPushState) setCoordinatedPushState(null);
+    if (isCoordinatedPushActive) setIsCoordinatedPushActive(false);
+    if (awaitingSecondPush) setAwaitingSecondPush(false);
+    if (firstPushDetails) setFirstPushDetails(null);
+    if (eligibleSecondPawns.length > 0) setEligibleSecondPawns([]);
+    if (secondPawnSelected) setSecondPawnSelected(null);
+  }
+
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); 
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
       if (data.queens_domain && myAdvantage?.id === 'queens_domain') {
         console.log("[ChessGame] Received advantageStateUpdated for Queen's Domain:", data.queens_domain);
         setQueensDomainState(data.queens_domain);
-        // If server confirms isActive is false or advantage is used, ensure UI toggle reflects this
         if (!data.queens_domain.isActive || data.queens_domain.hasUsed) {
           setIsQueensDomainToggleActive(false);
+        }
+      } else if (data.coordinatedPush && myAdvantage?.id === 'coordinated_push') {
+        console.log("[ChessGame] Received advantageStateUpdated for Coordinated Push:", data.coordinatedPush);
+        setCoordinatedPushState(data.coordinatedPush);
+        if (data.coordinatedPush.usedThisTurn) {
+            setIsCoordinatedPushActive(false); 
+            setAwaitingSecondPush(false);      
+            setFirstPushDetails(null);
+            setEligibleSecondPawns([]);
+            setSecondPawnSelected(null);
         }
       }
     };
@@ -227,7 +244,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     return () => {
       socket.off("advantageStateUpdated", handleAdvantageStateUpdate);
     };
-  }, [myAdvantage]); // Listen for changes to myAdvantage to setup/teardown if it's QD
+  }, [myAdvantage]); 
 
   useEffect(() => {
     if (!roomId) return;
@@ -261,10 +278,9 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       try {
         game.load(data.fen);
         setFen(game.fen());
-        fenSnapshotBeforeMove.current = game.fen(); // Initialize snapshot with starting FEN
+        fenSnapshotBeforeMove.current = game.fen(); 
       } catch (e) {
         console.error("[ChessGame event gameStart] Error loading FEN from gameStart event:", e, "FEN was:", data.fen);
-        // Optionally request a FEN sync if loading fails, though this should be rare for gameStart
         socket.emit("requestFenSync", { roomId });
       }
     };
@@ -369,6 +385,21 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         if (receivedMove.updatedAdvantageStates?.queenly_compensation && myAdvantage?.id === 'queenly_compensation') {
           setQueenlyCompensationState(receivedMove.updatedAdvantageStates.queenly_compensation);
           console.log("[ChessGame handleReceiveMove ECHO] Queenly Compensation state updated from server echo:", receivedMove.updatedAdvantageStates.queenly_compensation);
+        }
+        
+        if (receivedMove.special === 'coordinated_push') {
+            if (receivedMove.updatedAdvantageStates?.coordinatedPush) {
+                setCoordinatedPushState(receivedMove.updatedAdvantageStates.coordinatedPush);
+                 console.log("[ChessGame handleReceiveMove ECHO CP] Coordinated Push state updated from server echo:", receivedMove.updatedAdvantageStates.coordinatedPush);
+            } else if (coordinatedPushState && !coordinatedPushState.usedThisTurn) {
+                setCoordinatedPushState({ ...coordinatedPushState, usedThisTurn: true });
+                console.log("[ChessGame handleReceiveMove ECHO CP] Coordinated Push state updated (fallback to hasUsed:true) due to echo.");
+            }
+            setIsCoordinatedPushActive(false);
+            setAwaitingSecondPush(false);
+            setFirstPushDetails(null);
+            setEligibleSecondPawns([]);
+            setSecondPawnSelected(null);
         }
 
         if (receivedMove.special === "lightning_capture") {
@@ -503,48 +534,72 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       // Knightmare state update from server echo or opponent move
       if (receivedMove.special === 'knightmare') {
         if (isEcho && receivedMove.color === color && receivedMove.from) {
-            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare ECHO received. From: ${receivedMove.from}, To: ${receivedMove.to}. Current knightmareState before update: ${JSON.stringify(knightmareState)}`);
-            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare ECHO received. From: ${receivedMove.from}, To: ${receivedMove.to}. Current knightmareState before update: ${JSON.stringify(knightmareState)}`);
-            
             if (receivedMove.updatedAdvantageStates?.knightmare) {
               setKnightmareState({ hasUsed: receivedMove.updatedAdvantageStates.knightmare.hasUsed });
-              console.log(`[KM DEBUG ChessGame] handleReceiveMove: Knightmare state updated from server echo. New state: { hasUsed: ${receivedMove.updatedAdvantageStates.knightmare.hasUsed} }`);
             } else {
-              // Fallback for safety, though server should always send it now
-              console.warn("[KM DEBUG ChessGame] handleReceiveMove: Knightmare echo did NOT contain updatedAdvantageStates. Optimistically setting hasUsed to true.");
               setKnightmareState({ hasUsed: true });
             }
-
             alert("🐴 Knightmare used!"); 
             setKnightmareActiveKnight(null);
             setKnightmarePossibleMoves([]);
         } else if (!isEcho && receivedMove.color !== color) {
-            // Opponent's Knightmare move. Client doesn't need to manage opponent's KM state directly.
-            // Board update is handled by general FEN update.
-            console.log(`[KM DEBUG ChessGame] handleReceiveMove: Opponent's Knightmare move received. From: ${receivedMove.from}, To: ${receivedMove.to}. Board update via afterFen: ${receivedMove.afterFen}.`);
+            // Opponent's Knightmare move.
+        }
+      }
+      
+      // Opponent's Coordinated Push move (if not covered by afterFen)
+      if (!isEcho && receivedMove.special === 'coordinated_push' && !receivedMove.afterFen) {
+        console.warn("[ChessGame OpponentMove CP Fallback] Opponent's Coordinated Push received without afterFen. Attempting manual application.");
+        if (receivedMove.from && receivedMove.to && receivedMove.secondFrom && receivedMove.secondTo) {
+            const firstOpponentMove = game.move({ from: receivedMove.from as Square, to: receivedMove.to as Square });
+            if (firstOpponentMove) {
+                const secondOpponentMove = game.move({ from: receivedMove.secondFrom as Square, to: receivedMove.secondTo as Square });
+                if (secondOpponentMove) {
+                    setFen(game.fen());
+                } else {
+                    console.error("[ChessGame OpponentMove CP Fallback] Failed to apply second part of opponent's Coordinated Push. Requesting FEN sync.");
+                    socket.emit("requestFenSync", { roomId });
+                }
+            } else {
+                console.error("[ChessGame OpponentMove CP Fallback] Failed to apply first part of opponent's Coordinated Push. Requesting FEN sync.");
+                socket.emit("requestFenSync", { roomId });
+            }
+        } else {
+            console.error("[ChessGame OpponentMove CP Fallback] Opponent's Coordinated Push missing required fields (from, to, secondFrom, secondTo). Requesting FEN sync.");
+            socket.emit("requestFenSync", { roomId });
+        }
+      }
+      if (!isEcho && game.turn() === color?.[0]) {
+        if (myAdvantage?.id === 'coordinated_push' && coordinatedPushState && coordinatedPushState.usedThisTurn) {
+        }
+        if (awaitingSecondPush) {
+            setAwaitingSecondPush(false);
+            setFirstPushDetails(null);
+            setEligibleSecondPawns([]);
+            setSecondPawnSelected(null);
+            setIsCoordinatedPushActive(false); 
+             if (fenSnapshotBeforeMove.current && game.fen() !== fenSnapshotBeforeMove.current) {
+            }
         }
       }
 
+
       // Queenly Compensation Toast Notifications (after FEN has been updated)
-      if (color) { // Ensure color is not null
+      if (color) { 
         if (shouldShowQueenlyCompensationToast({ move: receivedMove, myColor: color, myAdvantageId: myAdvantage?.id })) {
           alert("♘ Queenly Compensation: A knight rises where your queen fell.");
-          // Update local state based on server echo if this was our move, or if server sent it for opponent's move that affected us.
           if (receivedMove.updatedAdvantageStates?.queenly_compensation) {
             setQueenlyCompensationState(receivedMove.updatedAdvantageStates.queenly_compensation);
             console.log("[ChessGame QC Toast] QC state updated from receivedMove.updatedAdvantageStates:", receivedMove.updatedAdvantageStates.queenly_compensation);
-          } else if (isEcho) { // If it's an echo of our move triggering QC, but somehow state wasn't in payload.
+          } else if (isEcho) { 
             setQueenlyCompensationState({ hasUsed: true });
             console.log("[ChessGame QC Toast] QC state updated (fallback to hasUsed:true) due to echo.");
           }
         } else {
-          // Generic toast for the opponent
           const playerWhoseQueenWasCompensated = receivedMove.color === 'white' ? 'black' : 'white';
           if (receivedMove.specialServerEffect === 'queenly_compensation_triggered' && playerWhoseQueenWasCompensated !== color) {
               const homeSquare = playerWhoseQueenWasCompensated === 'white' ? 'd1' : 'd8';
               alert(`Opponent's Queenly Compensation triggered: A knight appeared on ${homeSquare}.`);
-              // If the server sends the opponent's QC state, we could theoretically store it,
-              // but it's not typically needed for the current player's UI beyond this notification.
           }
         }
       }
@@ -564,12 +619,12 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     const handleAdvantageAssigned = (data: {
       advantage: Advantage;
       shieldedPiece?: ShieldedPieceInfo;
-      advantageDetails?: any; // To accommodate various advantage details
+      advantageDetails?: any; 
     }) => {
       console.log('[Arcane Reinforcement Debug Client] Received advantageAssigned event. Data:', JSON.stringify(data));
-      console.log("[ChessGame event] advantageAssigned:", data); // Existing log, can be kept or removed
+      console.log("[ChessGame event] advantageAssigned:", data); 
       setMyAdvantage(data.advantage);
-      setArcaneReinforcementSpawnedSquare(null); // Clear previous AR state
+      setArcaneReinforcementSpawnedSquare(null); 
 
       if (data.shieldedPiece) {
         setMyShieldedPieceInfo(data.shieldedPiece);
@@ -587,20 +642,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         console.log("[ChessGame handleAdvantageAssigned] Queenly Compensation advantage assigned, state initialized.");
       } else if (data.advantage.id === 'arcane_reinforcement') {
         if (data.advantageDetails && typeof data.advantageDetails.spawnedSquare === 'string' && data.advantageDetails.spawnedSquare.length > 0) {
-          // Square is a non-empty string, so a bishop was spawned
           setArcaneReinforcementSpawnedSquare(data.advantageDetails.spawnedSquare);
           alert("🧙 Arcane Reinforcement: You begin with an extra bishop!");
           console.log(`[ChessGame] Arcane Reinforcement: Bishop spawned at ${data.advantageDetails.spawnedSquare}`);
         } else if (data.advantageDetails && data.advantageDetails.spawnedSquare === null) {
-          // Server explicitly said no square was available (spawnedSquare is null)
           setArcaneReinforcementSpawnedSquare(null);
           alert("🧙 Arcane Reinforcement: No empty squares available to place the extra bishop.");
           console.log('[ChessGame] Arcane Reinforcement: Skipped by server, no empty squares were available.');
         } else {
-          // spawnedSquare is missing entirely, undefined, or an empty string (which shouldn't happen for a valid square).
-          // This path indicates an unexpected issue in data or transmission if advantageDetails itself is present.
           setArcaneReinforcementSpawnedSquare(null);
-          // Alert the user that the advantage is active but there's an issue with the spawn location.
           alert("🧙 Arcane Reinforcement is active, but its effect might not apply correctly due to missing spawn details.");
           console.log('[ChessGame] Arcane Reinforcement active, but spawnedSquare was missing, undefined, or invalid in advantageDetails.');
         }
@@ -802,7 +852,6 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         setRoyalDecreeMessage(null);
       }
       if (knightmareActiveKnight) {
-        console.log("[KM DEBUG ChessGame Fix Attempt 2] useEffect [fen,color,etc.]: Turn changed or color set, and it's not my turn. Resetting Knightmare selection.");
         setKnightmareActiveKnight(null);
         setKnightmarePossibleMoves([]);
       }
@@ -811,7 +860,72 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
 
   const onSquareClick = (squareClicked: Square) => {
-    console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked}. MyAdv: ${myAdvantage?.id}, Turn: ${game.turn()}, MyColor: ${color?.[0]}, knightmareActiveKnight: ${knightmareActiveKnight}`);
+    // Coordinated Push Click-Click Logic
+    if (awaitingSecondPush && firstPushDetails && color) {
+        const pieceOnSquare = game.get(squareClicked);
+
+        if (secondPawnSelected) { // Second click: target square for the selected second pawn
+            const tempSecondMove: Partial<Move> = {
+                from: secondPawnSelected,
+                to: squareClicked,
+                piece: 'p', 
+                color: firstPushDetails.color,
+            };
+
+            // Basic validation for the second move (must be one square forward, same file)
+            const fromRank = parseInt(secondPawnSelected[1]);
+            const toRank = parseInt(squareClicked[1]);
+            const expectedToRank = fromRank + (firstPushDetails.color === 'w' ? 1 : -1);
+
+            if (squareClicked[0] === secondPawnSelected[0] && toRank === expectedToRank && !game.get(squareClicked)) {
+                const finalSecondMove = { 
+                    ...tempSecondMove, 
+                    flags: 'n', 
+                    san: '', 
+                    lan: '',
+                    before: '', 
+                    after: '' 
+                } as Move; 
+
+                if (validateCoordinatedPushClientMove(firstPushDetails, finalSecondMove)) {
+                    socket.emit("sendMove", {
+                        roomId,
+                        move: {
+                            from: firstPushDetails.from,
+                            to: firstPushDetails.to,
+                            secondFrom: finalSecondMove.from,
+                            secondTo: finalSecondMove.to,
+                            special: 'coordinated_push',
+                            color: color,
+                        },
+                    });
+                    if (coordinatedPushState) {
+                        setCoordinatedPushState({ ...coordinatedPushState, usedThisTurn: true });
+                    }
+                    setIsCoordinatedPushActive(false); 
+                    setAwaitingSecondPush(false);
+                    setFirstPushDetails(null);
+                    setEligibleSecondPawns([]);
+                    setSecondPawnSelected(null);
+                } else {
+                    alert("Invalid second pawn move for Coordinated Push. Client validation failed.");
+                }
+            } else {
+                alert("Invalid target square for the second pawn. Must be one square forward and empty.");
+            }
+            setSecondPawnSelected(null); 
+            return; 
+
+        } else if (eligibleSecondPawns.includes(squareClicked as Square)) { 
+            if (pieceOnSquare && pieceOnSquare.type === 'p' && pieceOnSquare.color === color[0]) {
+                setSecondPawnSelected(squareClicked as Square);
+            }
+            return; 
+        } else { 
+            if (secondPawnSelected) setSecondPawnSelected(null);
+        }
+    }
+    
     if (isSacrificialBlessingActive) {
       if (!selectedPieceForBlessing) {
         const pieceDetailsOnSquare = game.get(squareClicked);
@@ -865,58 +979,35 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     }
 
     if (myAdvantage?.id === "knightmare" && color && game.turn() === color[0]) {
-      console.log(`[KM DEBUG ChessGame] onSquareClick: Knightmare advantage is active for current player.`);
       const pieceOnClickedSquare = game.get(squareClicked);
-      console.log(`[KM DEBUG ChessGame] onSquareClick: Piece on clicked square ${squareClicked}: ${JSON.stringify(pieceOnClickedSquare)}`);
 
       if (!knightmareActiveKnight) { 
-          console.log(`[KM DEBUG ChessGame] onSquareClick: No knightmareActiveKnight. Attempting to activate.`);
           if (pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked on player's knight at ${squareClicked}. Checking canKnightUseKnightmare with state: ${JSON.stringify(knightmareState)}.`);
               if (canKnightUseKnightmare(knightmareState)) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for ${squareClicked}. Getting possible moves.`);
                   const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for ${squareClicked} (with state: ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
                   setKnightmareActiveKnight(squareClicked);
                   setKnightmarePossibleMoves(possibleMoves);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked}, knightmarePossibleMoves=${JSON.stringify(possibleMoves)}.`);
               } else {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned false for ${squareClicked} with state ${JSON.stringify(knightmareState)}.`);
                   setKnightmareActiveKnight(null);
                   setKnightmarePossibleMoves([]);
               }
           } else {
-               console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked square ${squareClicked} is not a player's knight, or no piece. Resetting active knight.`);
                setKnightmareActiveKnight(null);
                setKnightmarePossibleMoves([]);
           }
       } else { 
-          console.log(`[KM DEBUG ChessGame] onSquareClick: knightmareActiveKnight is ${knightmareActiveKnight}.`);
           if (knightmarePossibleMoves.includes(squareClicked as Square)) {
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is in knightmarePossibleMoves. Calling makeMove with isKnightmareMove=true.`);
               makeMove(knightmareActiveKnight, squareClicked, true); 
           } else { 
-              console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is NOT in knightmarePossibleMoves. Deselecting or re-evaluating.`);
               const previouslySelectedKnight = knightmareActiveKnight; 
               setKnightmareActiveKnight(null);
               setKnightmarePossibleMoves([]);
               if (squareClicked !== previouslySelectedKnight && pieceOnClickedSquare && pieceOnClickedSquare.type === 'n' && pieceOnClickedSquare.color === color[0]) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Re-evaluating for newly clicked knight ${squareClicked}.`);
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Passing knightmareState: ${JSON.stringify(knightmareState)} to canKnightUseKnightmare for new selection.`);
                    if (canKnightUseKnightmare(knightmareState)) {
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: canKnightUseKnightmare returned true for new knight ${squareClicked}.`);
                       const possibleMoves = getKnightmareSquares(game, squareClicked as Square, color[0] as 'w' | 'b', knightmareState);
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: getKnightmareSquares for new knight ${squareClicked} (with state ${JSON.stringify(knightmareState)}) returned: ${JSON.stringify(possibleMoves)}`);
                       setKnightmareActiveKnight(squareClicked);
                       setKnightmarePossibleMoves(possibleMoves);
-                      console.log(`[KM DEBUG ChessGame] onSquareClick: Set knightmareActiveKnight=${squareClicked} for new selection.`);
-                  } else {
-                       console.log(`[KM DEBUG ChessGame] onSquareClick: New knight ${squareClicked} cannot use Knightmare.`);
                   }
-              } else if (squareClicked === previouslySelectedKnight) {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked active Knightmare knight ${squareClicked} again to deselect.`);
-              } else {
-                  console.log(`[KM DEBUG ChessGame] onSquareClick: Clicked ${squareClicked} is not a knight, so just deselecting previous active one.`);
               }
           }
       }
@@ -1439,9 +1530,122 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
       // Knightmare Move Logic (if isKnightmareMove is true)
       // This needs to be placed before standard move logic
-      if (!move && isKnightmareMove && myAdvantage?.id === 'knightmare' && knightmareState && color) { // myColor was changed to color
-        console.log(`[KM DEBUG ChessGame] makeMove: Attempting Knightmare move from ${from} to ${to}. Active Knight: ${knightmareActiveKnight}`);
-        
+    
+    // Coordinated Push Logic (primarily for drag-and-drop, or if onSquareClick calls makeMove)
+    if (myColor && !isKnightmareMove) { // Ensure not a knightmare move and color is set
+        // Handling the FIRST part of Coordinated Push
+        if (isCoordinatedPushActive && !awaitingSecondPush && !coordinatedPushState?.usedThisTurn && color) {
+            const piece = game.get(from as Square);
+            if (piece?.type === 'p' && piece.color === color[0]) {
+                const tempGame = new Chess(game.fen());
+                // Use promotion 'q' just for validation, it won't stick if it's not a promotion move
+                const potentialFirstMove = tempGame.move({ from: from as Square, to: to as Square, promotion: 'q' });
+
+                // Check if it's a valid one-square pawn push (not a capture, not two squares)
+                if (potentialFirstMove && potentialFirstMove.piece === 'p' && 
+                    !potentialFirstMove.captured && 
+                    (potentialFirstMove.flags.includes('n') || potentialFirstMove.flags.includes('np')) && // 'n' for normal, 'np' for non-pawn promotion (though we check piece type)
+                    Math.abs(parseInt(potentialFirstMove.to[1]) - parseInt(potentialFirstMove.from[1])) === 1 &&
+                    potentialFirstMove.from[0] === potentialFirstMove.to[0] // Stays in the same file
+                ) {
+                    const gameForEligibleCheck = new Chess(game.fen());
+                    const eligiblePawns = isEligibleCoordinatedPushPair(gameForEligibleCheck, potentialFirstMove);
+
+                    if (eligiblePawns.length > 0) {
+                        fenSnapshotBeforeMove.current = game.fen(); // Save current FEN
+                        game.move(potentialFirstMove); // Apply first move locally for visual feedback
+                        setFen(game.fen());
+
+                        setFirstPushDetails(potentialFirstMove);
+                        setEligibleSecondPawns(eligiblePawns);
+                        setAwaitingSecondPush(true);
+                        // Do NOT send to server yet. Do NOT call standard move emission here.
+                        return null; // Prevent standard move processing
+                    } else {
+                        // It was a valid pawn push, but no eligible second pawn.
+                        // Allow it to be processed as a standard move if Coordinated Push cannot be completed.
+                        // No special handling here, will fall through to standard move logic.
+                        // Alerting might be too noisy if user just wants to push one pawn.
+                    }
+                }
+            }
+        }
+
+        // Handling the SECOND part of Coordinated Push (if drag-and-drop is used for the second pawn)
+        if (awaitingSecondPush && firstPushDetails && color && from && to) {
+            if (eligibleSecondPawns.includes(from as Square)) {
+                const piece = game.get(from as Square); // game instance here has first move applied
+                if (piece?.type === 'p' && piece.color === color[0]) {
+                    const tempGameForSecondMoveValidation = new Chess(game.fen()); // game.fen() is after the first push
+                    const potentialSecondMove = tempGameForSecondMoveValidation.move({from: from as Square, to: to as Square, promotion: 'q'});
+
+                    if (potentialSecondMove && potentialSecondMove.piece === 'p' && 
+                        !potentialSecondMove.captured &&
+                        Math.abs(parseInt(potentialSecondMove.to[1]) - parseInt(potentialSecondMove.from[1])) === 1 &&
+                        potentialSecondMove.from[0] === potentialSecondMove.to[0] // Stays in same file
+                    ) {
+                        if (validateCoordinatedPushClientMove(firstPushDetails, potentialSecondMove)) {
+                            socket.emit("sendMove", {
+                                roomId,
+                                move: {
+                                    from: firstPushDetails.from,
+                                    to: firstPushDetails.to,
+                                    secondFrom: potentialSecondMove.from,
+                                    secondTo: potentialSecondMove.to,
+                                    special: 'coordinated_push',
+                                    color: color,
+                                },
+                            });
+                            if (coordinatedPushState) {
+                               setCoordinatedPushState({ ...coordinatedPushState, usedThisTurn: true });
+                            }
+                            setIsCoordinatedPushActive(false);
+                            setAwaitingSecondPush(false);
+                            setFirstPushDetails(null);
+                            setEligibleSecondPawns([]);
+                            setSecondPawnSelected(null);
+                            
+                            game.move(potentialSecondMove); // Apply second move to main game instance
+                            setFen(game.fen());
+                            // Check for game over after applying the full move
+                            if (game.isCheckmate()) {
+                                const winnerLogic = game.turn() === "w" ? "black" : "white";
+                                setGameOverMessage(`${winnerLogic} wins by checkmate`);
+                                socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
+                            } // Add other game over checks if necessary (draw, stalemate etc.)
+                            return potentialSecondMove; 
+                        } else {
+                            alert("Client validation for Coordinated Push (second move) failed.");
+                            game.load(fenSnapshotBeforeMove.current); // Revert first local move
+                            setFen(game.fen());
+                            setAwaitingSecondPush(false);
+                            setFirstPushDetails(null);
+                            setEligibleSecondPawns([]);
+                            return null;
+                        }
+                    } else {
+                        alert("Second move for Coordinated Push is not a valid one-square pawn push.");
+                        // No need to revert here if the move itself was invalid on the current board, Chessboard component usually handles visual revert.
+                        // However, if the move was "valid" but didn't meet CP criteria, we might need to revert.
+                        // For now, if it's not a valid pawn push, let it be handled by standard Chessboard behavior (snap back)
+                    }
+                }
+            } else {
+                // Dragged piece is not an eligible second pawn. Cancel Coordinated Push attempt.
+                alert("The piece you tried to move is not an eligible second pawn for Coordinated Push. Cancelling.");
+                game.load(fenSnapshotBeforeMove.current); // Revert first local move
+                setFen(game.fen());
+                setIsCoordinatedPushActive(false); // Also turn off the toggle
+                setAwaitingSecondPush(false);
+                setFirstPushDetails(null);
+                setEligibleSecondPawns([]);
+            }
+            return null; // Prevent standard move processing if we were awaiting second push
+        }
+    }
+
+
+      if (!move && isKnightmareMove && myAdvantage?.id === 'knightmare' && knightmareState && color) {
         if (from !== knightmareActiveKnight) { 
             alert("Selected knight for Knightmare (" + (knightmareActiveKnight || "None") + ") does not match the piece being moved (" + from + "). Please reselect.");
             setKnightmareActiveKnight(null);
@@ -1455,28 +1659,20 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             setKnightmarePossibleMoves([]);
             return null;
         }
-        console.log(`[KM DEBUG ChessGame] makeMove: Calling handleKnightmareClientMove with game, from=${from}, to=${to}, color=${color}, state=${JSON.stringify(knightmareState)}`);
         const knightmarePayload = handleKnightmareClientMove({
           game, 
           from,
           to,
           color: color, 
-          knightmareState, // Pass the state, though handleKnightmareClientMove might not use its internals directly
+          knightmareState, 
         });
-        console.log(`[KM DEBUG ChessGame] makeMove: handleKnightmareClientMove returned: ${JSON.stringify(knightmarePayload)}`);
 
         if (knightmarePayload) {
           fenSnapshotBeforeMove.current = game.fen(); 
-          
-          // Optimistic Update for Knightmare (simplified)
           setKnightmareState({ hasUsed: true });
-          console.log("[KM DEBUG ChessGame] makeMove: Optimistically updated Knightmare state to hasUsed: true.");
-          
           socket.emit("sendMove", { roomId, move: knightmarePayload });
-          
           setKnightmareActiveKnight(null);
           setKnightmarePossibleMoves([]);
-          console.log("[KM DEBUG ChessGame] makeMove: Knightmare payload sent. UI reset.");
           return { from, to, piece: game.get(from as Square)?.type || 'n' }; 
         } else {
           alert("Invalid Knightmare move attempt (client validation failed).");
@@ -1795,6 +1991,41 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           {myAdvantage?.id === "queens_domain" && queensDomainState?.hasUsed && (
             <p style={{color: "red", margin: "5px"}}><em>Queen’s Domain has been used.</em></p>
           )}
+
+          {/* Coordinated Push Button and Info */}
+          {myAdvantage?.id === "coordinated_push" && !coordinatedPushState?.usedThisTurn && (
+            <button
+              onClick={() => {
+                if (awaitingSecondPush) { // If active and awaiting, cancel it
+                  setAwaitingSecondPush(false);
+                  setFirstPushDetails(null);
+                  setEligibleSecondPawns([]);
+                  setSecondPawnSelected(null);
+                  // Revert local board if first move was shown
+                  if (fenSnapshotBeforeMove.current) {
+                    game.load(fenSnapshotBeforeMove.current); 
+                    setFen(game.fen());
+                  }
+                }
+                const newToggleState = !isCoordinatedPushActive; 
+                setIsCoordinatedPushActive(newToggleState);
+              }}
+              disabled={coordinatedPushState?.usedThisTurn}
+              style={{ background: isCoordinatedPushActive ? "lightblue" : "", marginTop: "5px" }}
+              title="Push two adjacent pawns forward in the same turn."
+            >
+              {isCoordinatedPushActive ? "Deactivate" : "Activate"} Coordinated Push
+            </button>
+          )}
+          {myAdvantage?.id === "coordinated_push" && coordinatedPushState?.usedThisTurn && (
+            <p style={{ marginTop: '5px' }}><em>Coordinated Push has been used this turn.</em></p>
+          )}
+          {awaitingSecondPush && (
+            <div style={{ marginTop: '5px', padding: '5px', background: '#lightyellow', border: '1px solid #ccc' }}>
+              <p>Coordinated Push: First pawn moved. Select an eligible second pawn (highlighted) then its target square.</p>
+              <p>Eligible second pawns: {eligibleSecondPawns.join(', ')}</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -1831,9 +2062,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             let styles: { [key: string]: React.CSSProperties } = {};
 
             // Knightmare Highlighting
-            // console.log(`[KM DEBUG ChessGame] customSquareStyles called. knightmareActiveKnight: ${knightmareActiveKnight}, knightmarePossibleMoves: ${JSON.stringify(knightmarePossibleMoves)}`);
             if (myAdvantage?.id === 'knightmare' && knightmareActiveKnight && color && game.turn() === color[0]) {
-               console.log(`[KM DEBUG ChessGame] customSquareStyles: Knightmare active. Highlighting ${knightmareActiveKnight} and moves: ${JSON.stringify(knightmarePossibleMoves)}`);
                styles[knightmareActiveKnight] = { 
                  ...styles[knightmareActiveKnight], 
                  background: "rgba(255, 200, 0, 0.4)", 
@@ -1842,16 +2071,14 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                knightmarePossibleMoves.forEach(sq => {
                    styles[sq] = { 
                      ...styles[sq], 
-                  background: "rgba(240, 230, 140, 0.5)", // Existing Knightmare highlight
+                  background: "rgba(240, 230, 140, 0.5)", 
                      cursor: "pointer", 
                    };
                });
             } else if (arcaneReinforcementSpawnedSquare && myAdvantage?.id === 'arcane_reinforcement') {
-              // Highlight for Arcane Reinforcement if the square is set
-              // No need to check color here as it's only set for the current player's advantage
               styles[arcaneReinforcementSpawnedSquare] = {
-                ...styles[arcaneReinforcementSpawnedSquare], // Preserve other styles like Knightmare selection
-                background: "rgba(100, 200, 100, 0.4)", // A green highlight
+                ...styles[arcaneReinforcementSpawnedSquare], 
+                background: "rgba(100, 200, 100, 0.4)", 
               };
             }
 
@@ -1936,6 +2163,28 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                 console.log('[SB Debug customSquareStyles] Empty squares based on store FEN:', emptySquaresCount);
               }
             }
+
+            // Coordinated Push Highlighting
+            if (awaitingSecondPush && eligibleSecondPawns.length > 0 && color) {
+              const playerTurnColor = color[0]; // 'w' or 'b'
+              eligibleSecondPawns.forEach(sq => {
+                  styles[sq] = { ...styles[sq], background: "rgba(255, 215, 0, 0.5)", cursor: "pointer" }; // Gold highlight for pawn itself
+                  // Highlight its target square
+                  const piece = game.get(sq); // game has first move applied, so this piece is in its original spot for the second move
+                  if (piece && piece.color === playerTurnColor) { // Ensure it's the current player's pawn
+                      const targetRank = parseInt(sq[1]) + (piece.color === 'w' ? 1 : -1);
+                      const targetSq = `${sq[0]}${targetRank}`;
+                      // Check if target is valid (on board) and empty (on the game state *after* the first push)
+                      if (targetRank >=1 && targetRank <=8 && !game.get(targetSq as Square)) { 
+                           styles[targetSq] = { ...styles[targetSq], background: "rgba(255, 255, 150, 0.4)", cursor: "pointer" }; // Lighter yellow for target
+                      }
+                  }
+              });
+            }
+            if (secondPawnSelected) { // Highlight selected second pawn for click-click
+                styles[secondPawnSelected] = { ...styles[secondPawnSelected], background: "rgba(0, 128, 0, 0.7)" }; // Green when selected
+            }
+
             return styles;
           })()}
         />

@@ -33,11 +33,17 @@ export interface PawnAmbushState {
   ambushedPawns: string[]; // Stores initial squares of pawns that have used ambush, e.g., ["e2", "g7"]
 }
 
+export interface CoordinatedPushState {
+  active: boolean;
+  usedThisTurn: boolean;
+}
+
 export interface PlayerAdvantageStates {
   royalEscort?: RoyalEscortState;
   lightningCapture?: LightningCaptureState;
   openingSwap?: OpeningSwapState;
   pawnAmbush?: PawnAmbushState; // Added Pawn Ambush state
+  coordinatedPush?: CoordinatedPushState;
   hasUsedSacrificialBlessing?: boolean;
   queens_domain?: {
     isActive: boolean;
@@ -61,13 +67,14 @@ export interface SacrificialBlessingPendingState {
 export interface ServerMovePayload {
   from: string;
   to: string;
-  special?: string;
+  special?: string; // e.g., 'coordinated_push', 'lightning_capture', 'queens_domain_move'
   color?: "white" | "black";
   rookFrom?: string;
   rookTo?: string;
   promotion?: string;
-  secondTo?: string; // For Lightning Capture
+  secondTo?: string;   // For Coordinated Push second pawn
   wasPawnAmbush?: boolean; // Added for Pawn Ambush
+  secondFrom?: string; // For Coordinated Push second pawn
   specialServerEffect?: string; // Add this line (e.g., 'queens_domain_consumed')
   afterFen?: string; // Add this line
   updatedAdvantageStates?: Partial<PlayerAdvantageStates>;
