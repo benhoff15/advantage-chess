@@ -4,9 +4,11 @@ import { Chess, PieceSymbol } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { Square } from "chess.js";
 import { socket } from "../socket";
-import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState } from "../../shared/types"; // Import ServerMovePayload
+import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState, SummonNoShowBishopPayload, PlayerAdvantageStates as FullPlayerAdvantageStates } from "../../shared/types"; // Import ServerMovePayload, SummonNoShowBishopPayload, and rename PlayerAdvantageStates
 import { useSacrificialBlessingStore, SacrificialBlessingPiece } from "../logic/advantages/sacrificialBlessing";
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
+import { isSummonAvailable } from "../logic/advantages/noShowBishop";
+// Square is already imported from chess.js
 import {
   handlePawnRushClient,
   applyPawnRushOpponentMove,
@@ -52,7 +54,7 @@ import { Move } from "chess.js";
 import { CoordinatedPushState } from "../../shared/types";
 import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from "../logic/advantages/coordinatedPush";
 import { shouldHidePiece } from "../logic/advantages/cloak";
-import { PlayerAdvantageStates, CloakState } from "../../shared/types"; 
+import { PlayerAdvantageStates, CloakState } from "../../shared/types"; // This is the one used for opponentAdvantageStates etc.
 // Square is already imported from chess.js
 
 // Define the type for the chess.js Move object if not already available globally
@@ -140,6 +142,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   const [firstPushDetails, setFirstPushDetails] = useState<Move | null>(null);
   const [eligibleSecondPawns, setEligibleSecondPawns] = useState<Square[]>([]);
   const [secondPawnSelected, setSecondPawnSelected] = useState<Square | null>(null);
+
+  // No-Show Bishop State Variables
+  const [noShowBishopState, setNoShowBishopState] = useState<{ used: boolean; removedPiece?: { square: Square; type: PieceSymbol } } | null>(null);
+  const [isSummonModeActive, setIsSummonModeActive] = useState<boolean>(false);
 
   const {
     isSacrificialBlessingActive,
@@ -245,6 +251,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   } else {
     // If advantage IS cloak, but details are not yet set (e.g. from advantageAssigned), initialize or ensure it's null
     if (!myCloakDetails) setMyCloakDetails(null); 
+  }
+
+  // No-Show Bishop advantage initialization/reset
+  if (myAdvantage?.id === 'no_show_bishop') {
+    // Initialize with default state; advantageAssigned will provide full details.
+    setNoShowBishopState(prevState => prevState || { used: false, removedPiece: undefined });
+  } else {
+    if (noShowBishopState) setNoShowBishopState(null);
+    if (isSummonModeActive) setIsSummonModeActive(false);
   }
 
   }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // myCloakDetails is intentionally not in dependency array to avoid loops with its own setter
@@ -370,6 +385,22 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           setMyOpeningSwapState(myCurrentFullStates.openingSwap || null);
           setQueenlyCompensationState(myCurrentFullStates.queenly_compensation || null);
           setCoordinatedPushState(myCurrentFullStates.coordinatedPush || null);
+          
+          // Update No-Show Bishop state from full states
+          if (myAdvantage?.id === 'no_show_bishop' && myCurrentFullStates?.noShowBishopUsed !== undefined) {
+            console.log("[ChessGame handleReceiveMove] Updating noShowBishopState from myCurrentFullStates:", myCurrentFullStates.noShowBishopUsed, myCurrentFullStates.noShowBishopRemovedPiece);
+            const incomingNsbData = myCurrentFullStates?.noShowBishopRemovedPiece;
+            setNoShowBishopState(prevState => {
+                const prevNsbState = prevState || { used: false, removedPiece: undefined };
+                return {
+                    used: myCurrentFullStates.noShowBishopUsed!, // Assert non-null
+                    removedPiece: incomingNsbData ? {
+                        square: incomingNsbData.square as Square,
+                        type: incomingNsbData.type as PieceSymbol
+                    } : prevNsbState.removedPiece
+                };
+            });
+          }
           // Note: PawnAmbushState is not explicitly managed with useState yet, but could be added if needed locally.
           // ArcaneReinforcement (spawnedSquare) is handled in advantageAssigned.
           // SacrificialBlessing state (hasUsed) is managed by hasUsedMySacrificialBlessing.
@@ -735,6 +766,32 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         setMyCloakDetails(null); // Or some default initial state if appropriate
         console.warn(`[Cloak Client ChessGame - handleAdvantageAssigned] Cloak assigned but details missing.`);
       }
+
+      // Handle No-Show Bishop advantage assignment
+      if (data.advantage.id === 'no_show_bishop') {
+        const used = data.advantageDetails?.noShowBishopUsed || false;
+        const details = data.advantageDetails?.removedBishopDetails;
+        console.log(`[No-Show Bishop Client] advantageAssigned: used=${used}, removedPiece=`, details);
+        
+        setNoShowBishopState({ 
+            used: used, 
+            removedPiece: details ? {
+                square: details.square as Square,
+                type: details.type as PieceSymbol
+            } : undefined 
+        });
+        console.log(`[No-Show Bishop Client ChessGame - handleAdvantageAssigned] No-Show Bishop assigned. Used: ${used}, Removed Piece:`, details);
+
+        if (details) {
+          // Ensure correct type for PieceSymbol if needed for display, though it's usually a char like 'b'
+          const pieceTypeDisplay = details.type.toUpperCase(); 
+          alert(`No-Show Bishop: Your ${pieceTypeDisplay} on ${details.square} has been removed. You can summon it before turn 10 (i.e. before your 10th move / history length 20).`);
+        } else if (myAdvantage?.id === 'no_show_bishop' && !details) {
+          // This case means the advantage is active, but no piece was removed (e.g. server couldn't find one)
+          alert("No-Show Bishop: Advantage active, but no piece was removed (e.g., no standard bishops found on starting squares). You may not be able to summon a piece.");
+           console.warn("[No-Show Bishop Client ChessGame - handleAdvantageAssigned] No-Show Bishop active, but no removedBishopDetails provided by server.");
+        }
+      }
     };
     socket.on("advantageAssigned", handleAdvantageAssigned);
 
@@ -875,6 +932,72 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     };
     socket.on("royalDecreeLifted", handleRoyalDecreeLifted);
 
+    // No-Show Bishop Listeners
+    const handleBishopSummoned = (data: {
+      newFen: string;
+      playerColor: 'white' | 'black';
+      summonedSquare: Square;
+      pieceType: PieceSymbol;
+      noShowBishopUsed: boolean; // This is specific to the player who summoned
+      whitePlayerAdvantageStatesFull?: FullPlayerAdvantageStates;
+      blackPlayerAdvantageStatesFull?: FullPlayerAdvantageStates;
+    }) => {
+      console.log("[No-Show Bishop Client] bishopSummoned event received:", data);
+      console.log("[No-Show Bishop Client] Loading new FEN after summon:", data.newFen);
+      game.load(data.newFen);
+      setFen(game.fen());
+      fenSnapshotBeforeMove.current = game.fen(); // Update snapshot
+
+      alert(`Player ${data.playerColor} summoned their ${data.pieceType.toUpperCase()} to ${data.summonedSquare}.`);
+
+      const myUpdatedFullStates = color === 'white' ? data.whitePlayerAdvantageStatesFull : data.blackPlayerAdvantageStatesFull;
+      const oppUpdatedFullStates = color === 'white' ? data.blackPlayerAdvantageStatesFull : data.whitePlayerAdvantageStatesFull;
+
+      if (myAdvantage?.id === 'no_show_bishop' && myUpdatedFullStates?.noShowBishopUsed !== undefined) {
+        console.log("[No-Show Bishop Client bishopSummoned] Updating my noShowBishopState from myUpdatedFullStates:", myUpdatedFullStates);
+        const incomingNsbSummonData = myUpdatedFullStates?.noShowBishopRemovedPiece;
+        setNoShowBishopState(prevState => {
+          const prevNsbState = prevState || { used: true, removedPiece: undefined };
+          return {
+            used: myUpdatedFullStates!.noShowBishopUsed!,
+            removedPiece: incomingNsbSummonData ? {
+              square: incomingNsbSummonData.square as Square,
+              type: incomingNsbSummonData.type as PieceSymbol
+            } : prevNsbState.removedPiece
+          };
+        });
+      } else if (data.playerColor === color && myAdvantage?.id === 'no_show_bishop') {
+        console.log("[No-Show Bishop Client bishopSummoned] Fallback: Updating my noShowBishopState as used because I summoned.");
+        setNoShowBishopState(prevState => ({
+          ...(prevState || { used: true, removedPiece: undefined }),
+          used: true,
+        }));
+      }
+
+      if (oppUpdatedFullStates) {
+        setOpponentAdvantageStates(oppUpdatedFullStates);
+      }
+
+      // Log game over state after summon
+      if (game.isCheckmate()) {
+        const winner = game.turn() === "w" ? "black" : "white";
+        setGameOverMessage(`${winner.charAt(0).toUpperCase() + winner.slice(1)} wins by checkmate!`);
+        console.log("[No-Show Bishop Client] Game over by checkmate after bishop summon.");
+      } else if (game.isDraw()) {
+        setGameOverMessage("Draw!");
+        console.log("[No-Show Bishop Client] Game over by draw after bishop summon.");
+      }
+    };
+    socket.on("bishopSummoned", handleBishopSummoned);
+
+    const handleSummonBishopFailed = (data: { message: string }) => {
+      console.warn("[No-Show Bishop Client] summonBishopFailed event received:", data);
+      alert(`Summon Failed: ${data.message}`);
+      setIsSummonModeActive(false);
+    };
+    socket.on("summonBishopFailed", handleSummonBishopFailed);
+
+
     return () => {
       console.log(
         `[ChessGame useEffect cleanup] Cleaning up listeners for room: ${roomId}, color: ${color}`,
@@ -896,6 +1019,8 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       socket.off('boardUpdateFromBlessing', handleBoardUpdateFromBlessing);
       socket.off('sacrificialBlessingFailed', handleSacrificialBlessingFailed);
       socket.off("restlessKingActivated", handleRestlessKingActivated); 
+      socket.off("bishopSummoned", handleBishopSummoned);
+      socket.off("summonBishopFailed", handleSummonBishopFailed);
     };
   }, [
     roomId,
@@ -940,6 +1065,55 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
 
   const onSquareClick = (squareClicked: Square) => {
+    // No-Show Bishop Summon Logic
+    if (
+      isSummonModeActive &&
+      myAdvantage?.id === 'no_show_bishop' &&
+      noShowBishopState &&
+      !noShowBishopState.used &&
+      color &&
+      noShowBishopState.removedPiece
+    ) {
+      // PATCH: Log the current FEN and the entire board for debugging
+      console.log("[No-Show Bishop] Summon attempt on", squareClicked, "Current FEN:", game.fen());
+      for (let r = 8; r >= 1; r--) {
+        let rowLog = "";
+        for (let c = 0; c < 8; c++) {
+          const sq = String.fromCharCode(97 + c) + r;
+          const piece = game.get(sq as Square);
+          rowLog += (piece ? piece.type + piece.color : "--") + " ";
+        }
+        console.log(`[No-Show Bishop] Board row ${r}:`, rowLog);
+      }
+      const pieceOnSquare = game.get(squareClicked);
+      console.log(
+        "[No-Show Bishop] Summon attempt on",
+        squareClicked,
+        "pieceOnSquare:",
+        pieceOnSquare,
+        "Typeof:",
+        typeof pieceOnSquare
+      );
+      // PATCH: Use the same empty square check as Sacrificial Blessing
+      if (pieceOnSquare === null || typeof pieceOnSquare === 'undefined') {
+        const payload: SummonNoShowBishopPayload = {
+          square: squareClicked,
+          color: color, // 'white' or 'black'
+          piece: {
+            type: noShowBishopState.removedPiece.type, // e.g., 'b'
+            color: color[0] as 'w' | 'b', // 'w' or 'b'
+          },
+        };
+        console.log("[No-Show Bishop] Emitting summon_no_show_bishop with payload:", payload);
+        socket.emit("summon_no_show_bishop", { roomId, payload });
+        setIsSummonModeActive(false);
+      } else {
+        alert("Cannot summon bishop to an occupied square. Click an empty square or cancel summon.");
+        console.log("[No-Show Bishop] Attempted to summon on occupied square:", squareClicked, "Piece:", pieceOnSquare);
+      }
+      return;
+    }
+
     // Coordinated Push Click-Click Logic
     if (awaitingSecondPush && firstPushDetails && color) {
         console.log("[CP DEBUG] Awaiting second push. Clicked:", squareClicked, "FirstPushDetails:", firstPushDetails, "EligibleSecondPawns:", eligibleSecondPawns, "SecondPawnSelected:", secondPawnSelected);
@@ -1407,12 +1581,12 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           usedCount: prevState!.usedCount + 1,
         }));
         if (game.isCheckmate()) {
-          const winner = game.turn() === "w" ? "black" : "white";
-          setGameOverMessage(`${winner} wins by checkmate`);
+          const winnerLogic = game.turn() === "w" ? "black" : "white"; 
+          setGameOverMessage(`${winnerLogic} wins by checkmate`);
           socket.emit("gameOver", {
             roomId,
-            message: `${myColor} wins by checkmate!`,
-            winnerColor: myColor,
+            message: `${winnerLogic} wins by checkmate!`,
+            winnerColor: winnerLogic,
           });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
@@ -2159,6 +2333,41 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
               <p>Coordinated Push: First pawn moved. Select an eligible second pawn (highlighted) then its target square.</p>
               <p>Eligible second pawns: {eligibleSecondPawns.join(', ')}</p>
             </div>
+          )}
+
+          {/* No-Show Bishop Summon Button and UI */}
+          {myAdvantage?.id === 'no_show_bishop' && noShowBishopState && !noShowBishopState.used && game && color && game.turn() === color[0] && isSummonAvailable(game.history().length, noShowBishopState.used) && noShowBishopState.removedPiece && (
+            <div style={{ marginTop: '10px', padding: '10px', background: '#f0e6ff', borderRadius: '4px' }}>
+              {!isSummonModeActive ? (
+                <button
+                  onClick={() => {
+                    setIsSummonModeActive(true);
+                    alert("Summon Mode Activated: Click an empty square on the board to summon your bishop.");
+                    console.log("[No-Show Bishop] Summon mode activated.");
+                  }}
+                >
+                  Summon Bishop ({noShowBishopState.removedPiece.type.toUpperCase()} from {noShowBishopState.removedPiece.square})
+                </button>
+              ) : (
+                <div>
+                  <p><strong>Summon Mode Active:</strong> Click an empty square to place your bishop.</p>
+                  <button
+                    onClick={() => {
+                      setIsSummonModeActive(false);
+                      console.log("[No-Show Bishop] Summon mode cancelled.");
+                    }}
+                  >
+                    Cancel Summon
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {myAdvantage?.id === 'no_show_bishop' && noShowBishopState?.used && (
+            <p style={{ marginTop: '5px', fontStyle: 'italic' }}>Your No-Show Bishop has been summoned.</p>
+          )}
+           {myAdvantage?.id === 'no_show_bishop' && noShowBishopState && !noShowBishopState.used && game && !isSummonAvailable(game.history().length, noShowBishopState.used) && (
+            <p style={{ marginTop: '5px', fontStyle: 'italic', color: 'grey' }}>The period to summon your No-Show Bishop has expired.</p>
           )}
         </div>
       )}

@@ -63,6 +63,8 @@ export interface PlayerAdvantageStates {
   };
   // Add other advantage states here as needed
   cloak?: CloakState; // Add this line
+  noShowBishopUsed?: boolean;
+  noShowBishopRemovedPiece?: { square: string, type: string };
 }
 
 export interface SacrificialBlessingPendingState {
@@ -85,3 +87,5 @@ export interface ServerMovePayload {
   afterFen?: string; // Add this line
   updatedAdvantageStates?: Partial<PlayerAdvantageStates>;
 }
+
+export type SummonNoShowBishopPayload = { square: string; color: "white" | "black"; piece: { type: string; color: 'w' | 'b' } };

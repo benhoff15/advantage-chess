@@ -20,13 +20,13 @@ export const ADVANTAGE_POOL: Advantage[] = [
 
   // Rare (25%)
   { id: "pawn_ambush", name: "Pawn Ambush", description: "A pawn promotes on reaching 6th rank.", rarity: "rare" }, // done
-  { id: "cloak", name: "Cloak", description: "One random piece starts invisible to the opponent. Lasts for 10 moves", rarity: "rare" },
+  { id: "cloak", name: "Cloak", description: "One random piece starts invisible to the opponent. Lasts for 10 moves", rarity: "rare" }, // done
   { id: "queenly_compensation", name: "Queenly Compensation", description: "When your queen is captured, a knight is summoned onto her home square. If the square is occupied, the knight replaces the occupying piece.", rarity: "rare"}, // done
   { id: "knightmare", name: "Knightmare", description: "A knight may make a double L-move once.", rarity: "rare" }, // done
   { id: "void_step", name: "Void Step", description: "One piece can pass through other pieces once.", rarity: "rare"},
   { id: "recall", name: "Recall", description: "Teleport any piece to its position 3 turns ago, once.", rarity: "rare" },
   { id: "lightning_capture", name: "Lightning Capture", description: "One piece captures and instantly moves again. Can be used only once. Must be activated before use.", rarity: "rare" }, // done
-  { id: "no_show_bishop", name: "No-Show Bishop", description: "Leave one bishop off the board. You may summon it to any empty square before turn 10.", rarity: "rare" },
+  { id: "no_show_bishop", name: "No-Show Bishop", description: "Leave one bishop off the board. You may summon it to any empty square before turn 10.", rarity: "rare" }, // done
   { id: "arcane_reinforcement", name: "Arcane Reinforcement", description: "Start with an extra bishop placed randomly.", rarity: "rare" }, // done
 
   // Legendary (5%)

@@ -1,9 +1,10 @@
 import { Server, Socket } from "socket.io";
-import { Chess, Move, Square } from "chess.js"; // Import Chess and Move
+import { Chess, Move, Square, PieceSymbol } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState, CloakState } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState, CloakState, SummonNoShowBishopPayload } from "../shared/types";
 import { assignCloakedPiece, handleCloakTurn, removeCloakOnCapture } from "./logic/advantages/cloak";
 import { applyArcaneReinforcement } from "./logic/advantages/arcaneReinforcement";
+import { handleNoShowBishopServer } from './logic/advantages/noShowBishop';
 import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
@@ -28,6 +29,16 @@ import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
 
 console.log("setupSocketHandlers loaded");
+
+// Define the AdvantageDetailsPayload interface
+interface AdvantageDetailsPayload {
+  spawnedSquare?: Square; // For Arcane Reinforcement
+  cloak?: CloakState; // For Cloak
+  noShowBishopUsed?: boolean; // For No-Show Bishop
+  removedBishopDetails?: { square: Square; type: PieceSymbol }; // For No-Show Bishop
+  shieldedPiece?: ShieldedPieceInfo; // For Silent Shield
+  // Add other optional properties for other advantages if they use advantageDetails
+}
 
 // Helper function to determine if a move is castling
 function isCastlingMove(move: Move, piece: { type: string, color: 'w' | 'b' }): boolean {
@@ -89,6 +100,10 @@ export type RoomState = {
   blackCoordinatedPushState?: CoordinatedPushState;
   whiteCloakState?: CloakState;
   blackCloakState?: CloakState;
+  whiteNoShowBishopUsed?: boolean;
+  blackNoShowBishopUsed?: boolean;
+  whiteNoShowBishopRemovedPiece?: { square: Square, type: PieceSymbol };
+  blackNoShowBishopRemovedPiece?: { square: Square, type: PieceSymbol };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -177,9 +192,13 @@ export function setupSocketHandlers(io: Server) {
           blackCoordinatedPushState: { active: false, usedThisTurn: false },
           whiteCloakState: undefined, 
           blackCloakState: undefined,
+          whiteNoShowBishopUsed: false,
+          blackNoShowBishopUsed: false,
+          whiteNoShowBishopRemovedPiece: undefined,
+          blackNoShowBishopRemovedPiece: undefined,
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), and Cloak (undefined).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), Cloak (undefined), and No-Show Bishop (false, undefined).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -214,6 +233,11 @@ export function setupSocketHandlers(io: Server) {
         if (!room.blackCoordinatedPushState) room.blackCoordinatedPushState = { active: false, usedThisTurn: false };
         if (room.whiteCloakState === undefined) room.whiteCloakState = undefined;
         if (room.blackCloakState === undefined) room.blackCloakState = undefined;
+        // No-Show Bishop states
+        if (room.whiteNoShowBishopUsed === undefined) room.whiteNoShowBishopUsed = false;
+        if (room.blackNoShowBishopUsed === undefined) room.blackNoShowBishopUsed = false;
+        if (room.whiteNoShowBishopRemovedPiece === undefined) room.whiteNoShowBishopRemovedPiece = undefined;
+        if (room.blackNoShowBishopRemovedPiece === undefined) room.blackNoShowBishopRemovedPiece = undefined;
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -265,8 +289,58 @@ export function setupSocketHandlers(io: Server) {
                 console.log(`[SocketHandlers] Arcane Reinforcement for black: No square found or failed to place.`);
             }
         }
+
+        // ---- No-Show Bishop Removal Logic ----
+        // This must happen AFTER advantages are assigned and BEFORE the final initial FEN is set.
+        // It modifies the initialGame instance.
+
+        // White No-Show Bishop
+        if (room.whiteAdvantage?.id === 'no_show_bishop' && room.white) {
+            const whiteBishops: { square: Square; type: PieceSymbol }[] = [];
+            const squares: Square[] = ['c1', 'f1']; // Standard starting squares for white bishops
+            for (const sq of squares) {
+                const piece = initialGame.get(sq);
+                if (piece && piece.type === 'b' && piece.color === 'w') {
+                    whiteBishops.push({ square: sq, type: piece.type as PieceSymbol });
+                }
+            }
+
+            if (whiteBishops.length > 0) {
+                const selectedBishop = whiteBishops[Math.floor(Math.random() * whiteBishops.length)];
+                room.whiteNoShowBishopRemovedPiece = { square: selectedBishop.square, type: selectedBishop.type };
+                initialGame.remove(selectedBishop.square as Square);
+                console.log(`[No-Show Bishop] White (${room.white}) has No-Show Bishop. Removed ${selectedBishop.type} from ${selectedBishop.square}. FEN preview: ${initialGame.fen()}`);
+            } else {
+                console.warn(`[No-Show Bishop] White (${room.white}) has No-Show Bishop, but no starting bishops found to remove. This might be due to other advantages modifying the board (e.g. Arcane Reinforcement placing a bishop).`);
+                // Ensure the state reflects that no piece was removed, though advantage is active.
+                room.whiteNoShowBishopRemovedPiece = undefined;
+            }
+        }
+
+        // Black No-Show Bishop
+        if (room.blackAdvantage?.id === 'no_show_bishop' && room.black) {
+            const blackBishops: { square: Square; type: PieceSymbol }[] = [];
+            const squares: Square[] = ['c8', 'f8']; // Standard starting squares for black bishops
+            for (const sq of squares) {
+                const piece = initialGame.get(sq);
+                if (piece && piece.type === 'b' && piece.color === 'b') {
+                    blackBishops.push({ square: sq, type: piece.type as PieceSymbol });
+                }
+            }
+
+            if (blackBishops.length > 0) {
+                const selectedBishop = blackBishops[Math.floor(Math.random() * blackBishops.length)];
+                room.blackNoShowBishopRemovedPiece = { square: selectedBishop.square, type: selectedBishop.type };
+                initialGame.remove(selectedBishop.square as Square);
+                console.log(`[No-Show Bishop] Black (${room.black}) has No-Show Bishop. Removed ${selectedBishop.type} from ${selectedBishop.square}. FEN preview: ${initialGame.fen()}`);
+            } else {
+                console.warn(`[No-Show Bishop] Black (${room.black}) has No-Show Bishop, but no starting bishops found to remove. This might be due to other advantages modifying the board.`);
+                room.blackNoShowBishopRemovedPiece = undefined;
+            }
+        }
+        // ---- End No-Show Bishop Removal Logic ----
         
-        // Now that Arcane Reinforcement (and any other pre-game board modifiers) are applied,
+        // Now that Arcane Reinforcement, No-Show Bishop, and any other pre-game board modifiers are applied,
         // set the definitive starting FEN for the room.
         room.fen = initialGame.fen();
         console.log(`[joinRoom] Definitive starting FEN for room ${roomId} after all pre-game advantages: ${room.fen}`);
@@ -299,127 +373,147 @@ export function setupSocketHandlers(io: Server) {
 
         // White player's advantage processing & emitting advantageAssigned
         if (room.whiteAdvantage && room.white) {
-            if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
-                const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
-                if (whiteShieldedPiece) {
-                    room.silentShieldPieces.white = whiteShieldedPiece;
-                    console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
-                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage, shieldedPiece: whiteShieldedPiece });
-                } else {
-                    io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+            const whitePlayerSocket = io.sockets.sockets.get(room.white);
+            if (whitePlayerSocket) {
+                let whiteAdvantageDetails: AdvantageDetailsPayload = {};
+
+                if (room.whiteAdvantage.id === "silent_shield" && room.silentShieldPieces) {
+                    const whiteShieldedPiece = selectProtectedPiece(initialGame, 'w');
+                    if (whiteShieldedPiece) {
+                        room.silentShieldPieces.white = whiteShieldedPiece;
+                        whiteAdvantageDetails.shieldedPiece = whiteShieldedPiece;
+                        console.log(`White player (${room.white}) protected piece: ${whiteShieldedPiece.type} at ${whiteShieldedPiece.initialSquare}`);
+                    }
                 }
-            } else if (room.whiteAdvantage.id === "royal_escort") {
-                room.whiteRoyalEscortState = { usedCount: 0 };
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
-            } else if (room.whiteAdvantage.id === "lightning_capture") {
-                room.whiteLightningCaptureState = { used: false }; // Initialize
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
-            } else if (room.whiteAdvantage.id === "opening_swap") {
-                room.whiteOpeningSwapState = { hasSwapped: false };
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
-            } else if (room.whiteAdvantage.id === "pawn_ambush") { // Added
-                room.whitePawnAmbushState = { ambushedPawns: [] }; // Added
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage }); // Standard emission
-                console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`); // Added
-            } else if (room.whiteAdvantage.id === "royal_decree") {
-                room.whiteHasUsedRoyalDecree = false;
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
-            } else if (room.whiteAdvantage.id === "queens_domain") {
-                room.whiteQueensDomainState = { isActive: false, hasUsed: false };
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
-            } else if (room.whiteAdvantage.id === "knightmare") { 
-                room.whiteKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
-            } else if (room.whiteAdvantage.id === "queenly_compensation") {
-                room.whiteQueenlyCompensationState = { hasUsed: false };
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
-                console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
-            } else if (room.whiteAdvantage.id === "arcane_reinforcement") {
-                const whitePayload = {
+                if (room.whiteAdvantage.id === "royal_escort") {
+                    room.whiteRoyalEscortState = { usedCount: 0 };
+                    console.log(`White player (${room.white}) assigned Royal Escort, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "lightning_capture") {
+                    room.whiteLightningCaptureState = { used: false };
+                    console.log(`White player (${room.white}) assigned Lightning Capture, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "opening_swap") {
+                    room.whiteOpeningSwapState = { hasSwapped: false };
+                    console.log(`White player (${room.white}) assigned Opening Swap, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "pawn_ambush") {
+                    room.whitePawnAmbushState = { ambushedPawns: [] };
+                    console.log(`White player (${room.white}) assigned Pawn Ambush, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "royal_decree") {
+                    room.whiteHasUsedRoyalDecree = false;
+                    console.log(`White player (${room.white}) assigned Royal Decree, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "queens_domain") {
+                    room.whiteQueensDomainState = { isActive: false, hasUsed: false };
+                    console.log(`White player (${room.white}) assigned Queen's Domain, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "knightmare") {
+                    room.whiteKnightmareState = { hasUsed: false };
+                    console.log(`White player (${room.white}) assigned Knightmare, state initialized: ${JSON.stringify(room.whiteKnightmareState)}`);
+                }
+                if (room.whiteAdvantage.id === "queenly_compensation") {
+                    room.whiteQueenlyCompensationState = { hasUsed: false };
+                    console.log(`White player (${room.white}) assigned Queenly Compensation, state initialized.`);
+                }
+                if (room.whiteAdvantage.id === "arcane_reinforcement") {
+                    whiteAdvantageDetails.spawnedSquare = room.whiteArcaneReinforcementSpawnedSquare ?? undefined;
+                    console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
+                }
+                if (room.whiteAdvantage.id === "cloak" && room.whiteCloakState) {
+                    whiteAdvantageDetails.cloak = room.whiteCloakState;
+                    console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for white:`, JSON.stringify(room.whiteCloakState));
+                }
+                if (room.whiteAdvantage.id === "no_show_bishop") {
+                    whiteAdvantageDetails.noShowBishopUsed = room.whiteNoShowBishopUsed || false;
+                    if (room.whiteNoShowBishopRemovedPiece) {
+                        whiteAdvantageDetails.removedBishopDetails = {
+                            square: room.whiteNoShowBishopRemovedPiece.square,
+                            type: room.whiteNoShowBishopRemovedPiece.type
+                        };
+                    } else {
+                        console.warn(`[SocketHandlers] whiteNoShowBishopRemovedPiece is undefined for white player (No-Show Bishop) in room ${roomId}.`);
+                    }
+                    console.log(`White player (${room.white}) assigned No-Show Bishop. Used: ${whiteAdvantageDetails.noShowBishopUsed}, Removed: ${JSON.stringify(whiteAdvantageDetails.removedBishopDetails)}`);
+                }
+
+                whitePlayerSocket.emit("advantageAssigned", {
                     advantage: room.whiteAdvantage,
-                    advantageDetails: { spawnedSquare: room.whiteArcaneReinforcementSpawnedSquare }
-                };
-                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to white. Payload:', JSON.stringify(whitePayload));
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", whitePayload);
-                console.log(`White player (${room.white}) assigned Arcane Reinforcement. Spawned at: ${room.whiteArcaneReinforcementSpawnedSquare}`);
-    } else if (room.whiteAdvantage.id === "cloak" && room.whiteCloakState) {
-        io.sockets.sockets.get(room.white)?.emit("advantageAssigned", {
-            advantage: room.whiteAdvantage,
-            advantageDetails: { cloak: room.whiteCloakState } // Send cloak state
-        });
-        console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for white:`, JSON.stringify(room.whiteCloakState));
-            } else { // Standard advantage emission for white
-                io.sockets.sockets.get(room.white)?.emit("advantageAssigned", { advantage: room.whiteAdvantage });
+                    advantageDetails: whiteAdvantageDetails
+                });
             }
         }
 
         // Black player's advantage processing (socket is black's socket here)
-        // The applyArcaneReinforcement logic for black has already run above and set room.blackArcaneReinforcementSpawnedSquare
         if (room.blackAdvantage) {
+            let blackAdvantageDetails: AdvantageDetailsPayload = {};
+
             if (room.blackAdvantage.id === "silent_shield" && room.silentShieldPieces) {
                 const blackShieldedPiece = selectProtectedPiece(initialGame, 'b');
                 if (blackShieldedPiece) {
                     room.silentShieldPieces.black = blackShieldedPiece;
-                    console.log(`Black player (${room.black}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
-                    socket.emit("advantageAssigned", { advantage: room.blackAdvantage, shieldedPiece: blackShieldedPiece });
-                } else {
-                     socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
+                    blackAdvantageDetails.shieldedPiece = blackShieldedPiece;
+                    console.log(`Black player (${socket.id}) protected piece: ${blackShieldedPiece.type} at ${blackShieldedPiece.initialSquare}`);
                 }
-            } else if (room.blackAdvantage.id === "royal_escort") {
-                room.blackRoyalEscortState = { usedCount: 0 };
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Royal Escort, state initialized.`);
-            } else if (room.blackAdvantage.id === "lightning_capture") {
-                room.blackLightningCaptureState = { used: false }; // Initialize
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Lightning Capture, state initialized.`);
-            } else if (room.blackAdvantage.id === "opening_swap") {
-                room.blackOpeningSwapState = { hasSwapped: false };
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Opening Swap, state initialized.`);
-            } else if (room.blackAdvantage.id === "pawn_ambush") { // Added
-                room.blackPawnAmbushState = { ambushedPawns: [] }; // Added
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage }); // Standard emission for black
-                console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`); // Added
-            } else if (room.blackAdvantage.id === "royal_decree") {
-                room.blackHasUsedRoyalDecree = false;
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Royal Decree, state initialized.`);
-            } else if (room.blackAdvantage.id === "queens_domain") {
-                room.blackQueensDomainState = { isActive: false, hasUsed: false };
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Queen's Domain, state initialized.`);
-            } else if (room.blackAdvantage.id === "knightmare") {
-                room.blackKnightmareState = { hasUsed: false }; // Initialize with hasUsed: false
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Knightmare, state initialized: ${JSON.stringify(room.blackKnightmareState)}`);
-            } else if (room.blackAdvantage.id === "queenly_compensation") {
-                room.blackQueenlyCompensationState = { hasUsed: false };
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
-                console.log(`Black player (${socket.id}) assigned Queenly Compensation, state initialized.`);
-            } else if (room.blackAdvantage.id === "arcane_reinforcement") {
-                const blackPayload = {
-                    advantage: room.blackAdvantage,
-                    advantageDetails: { spawnedSquare: room.blackArcaneReinforcementSpawnedSquare }
-                };
-                console.log('[Arcane Reinforcement Debug Server] Emitting advantageAssigned to black. Payload:', JSON.stringify(blackPayload));
-                socket.emit("advantageAssigned", blackPayload);
-                console.log(`Black player (${socket.id}) assigned Arcane Reinforcement. Spawned at: ${room.blackArcaneReinforcementSpawnedSquare}`);
-    } else if (room.blackAdvantage.id === "cloak" && room.blackCloakState) {
-        socket.emit("advantageAssigned", {
-            advantage: room.blackAdvantage,
-            advantageDetails: { cloak: room.blackCloakState } // Send cloak state
-        });
-        console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for black:`, JSON.stringify(room.blackCloakState));
-            } else { // Standard advantage emission for black
-                socket.emit("advantageAssigned", { advantage: room.blackAdvantage });
             }
+            if (room.blackAdvantage.id === "royal_escort") {
+                room.blackRoyalEscortState = { usedCount: 0 };
+                console.log(`Black player (${socket.id}) assigned Royal Escort, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "lightning_capture") {
+                room.blackLightningCaptureState = { used: false };
+                console.log(`Black player (${socket.id}) assigned Lightning Capture, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "opening_swap") {
+                room.blackOpeningSwapState = { hasSwapped: false };
+                console.log(`Black player (${socket.id}) assigned Opening Swap, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "pawn_ambush") {
+                room.blackPawnAmbushState = { ambushedPawns: [] };
+                console.log(`Black player (${socket.id}) assigned Pawn Ambush, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "royal_decree") {
+                room.blackHasUsedRoyalDecree = false;
+                console.log(`Black player (${socket.id}) assigned Royal Decree, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "queens_domain") {
+                room.blackQueensDomainState = { isActive: false, hasUsed: false };
+                console.log(`Black player (${socket.id}) assigned Queen's Domain, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "knightmare") {
+                room.blackKnightmareState = { hasUsed: false };
+                console.log(`Black player (${socket.id}) assigned Knightmare, state initialized: ${JSON.stringify(room.blackKnightmareState)}`);
+            }
+            if (room.blackAdvantage.id === "queenly_compensation") {
+                room.blackQueenlyCompensationState = { hasUsed: false };
+                console.log(`Black player (${socket.id}) assigned Queenly Compensation, state initialized.`);
+            }
+            if (room.blackAdvantage.id === "arcane_reinforcement") {
+                blackAdvantageDetails.spawnedSquare = room.blackArcaneReinforcementSpawnedSquare ?? undefined;
+                console.log(`Black player (${socket.id}) assigned Arcane Reinforcement. Spawned at: ${room.blackArcaneReinforcementSpawnedSquare}`);
+            }
+            if (room.blackAdvantage.id === "cloak" && room.blackCloakState) {
+                blackAdvantageDetails.cloak = room.blackCloakState;
+                console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for black:`, JSON.stringify(room.blackCloakState));
+            }
+            if (room.blackAdvantage.id === "no_show_bishop") {
+                blackAdvantageDetails.noShowBishopUsed = room.blackNoShowBishopUsed || false;
+                if (room.blackNoShowBishopRemovedPiece) {
+                    blackAdvantageDetails.removedBishopDetails = {
+                        square: room.blackNoShowBishopRemovedPiece.square,
+                        type: room.blackNoShowBishopRemovedPiece.type
+                    };
+                } else {
+                    console.warn(`[SocketHandlers] blackNoShowBishopRemovedPiece is undefined for black player (No-Show Bishop) in room ${roomId}.`);
+                }
+                console.log(`Black player (${socket.id}) assigned No-Show Bishop. Used: ${blackAdvantageDetails.noShowBishopUsed}, Removed: ${JSON.stringify(blackAdvantageDetails.removedBishopDetails)}`);
+            }
+            
+            socket.emit("advantageAssigned", {
+                advantage: room.blackAdvantage,
+                advantageDetails: blackAdvantageDetails
+            });
         }
         // ---- END Advantage Assignment and State Init ----
         
@@ -1213,6 +1307,103 @@ export function setupSocketHandlers(io: Server) {
             }
             // ---- End Queenly Compensation Main Logic ----
             
+            // ---- Forced No-Show Bishop Summon Check ----
+            // This happens *after* the current move (which is moveResult) has updated serverGame and room.fen,
+            // but *before* game over checks for the current move or emitting receiveMove.
+            const historyLength = serverGame.history().length;
+            console.log(`[Forced Summon Check] History length after current move: ${historyLength}`);
+
+            if (historyLength === 19 && senderColor) { // Current move was the 19th half-move
+              // The player whose turn just ended is senderColor.
+              // The player whose turn is *next* (and for whom we might force summon if *they* didn't use NSB)
+              // is serverGame.turn()
+              const nextPlayerColorChar = serverGame.turn(); // 'w' or 'b'
+              const nextPlayerFullColor = nextPlayerColorChar === 'w' ? 'white' : 'black';
+              let playerToCheckForForcedSummon: 'white' | 'black' | null = null;
+              let advantageToCheck: Advantage | undefined;
+              let noShowBishopUsed: boolean | undefined;
+              let removedPieceDetails: { square: Square, type: PieceSymbol } | undefined;
+
+              if (nextPlayerFullColor === 'white') {
+                playerToCheckForForcedSummon = 'white';
+                advantageToCheck = room.whiteAdvantage;
+                noShowBishopUsed = room.whiteNoShowBishopUsed;
+                removedPieceDetails = room.whiteNoShowBishopRemovedPiece;
+              } else if (nextPlayerFullColor === 'black') {
+                playerToCheckForForcedSummon = 'black';
+                advantageToCheck = room.blackAdvantage;
+                noShowBishopUsed = room.blackNoShowBishopUsed;
+                removedPieceDetails = room.blackNoShowBishopRemovedPiece;
+              }
+
+              if (playerToCheckForForcedSummon && advantageToCheck?.id === 'no_show_bishop' && !noShowBishopUsed && removedPieceDetails) {
+                console.log(`[Forced Summon Check] Player ${playerToCheckForForcedSummon} (${nextPlayerFullColor}) has No-Show Bishop, not used, and it's turn 19 end. Forcing summon.`);
+
+                let randomEmptySquare: Square | null = null;
+                const squares: Square[] = [];
+                for (let r = 0; r < 8; r++) {
+                  for (let c = 0; c < 8; c++) {
+                    squares.push(String.fromCharCode(97 + c) + (r + 1) as Square);
+                  }
+                }
+                // Shuffle squares to find a random empty one
+                for (let i = squares.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [squares[i], squares[j]] = [squares[j], squares[i]];
+                }
+                for (const sq of squares) {
+                  if (serverGame.get(sq) === null) {
+                    randomEmptySquare = sq;
+                    break;
+                  }
+                }
+
+                if (randomEmptySquare) {
+                  const summonPayload: SummonNoShowBishopPayload = {
+                    square: randomEmptySquare,
+                    color: nextPlayerFullColor,
+                    piece: { type: removedPieceDetails.type, color: nextPlayerColorChar },
+                  };
+                  const playerAdvantageStatesForForceSummon: PlayerAdvantageStates = {
+                    noShowBishopUsed: noShowBishopUsed,
+                    noShowBishopRemovedPiece: removedPieceDetails,
+                  };
+
+                  console.log(`[Forced Summon Check] Attempting forced summon for ${nextPlayerFullColor} to ${randomEmptySquare}`);
+                  const forceSummonResult = handleNoShowBishopServer(serverGame, summonPayload, nextPlayerColorChar, playerAdvantageStatesForForceSummon);
+
+                  if (forceSummonResult.success && forceSummonResult.newFen) {
+                    room.fen = forceSummonResult.newFen; // IMPORTANT: Update room.fen and serverGame
+                    if (nextPlayerFullColor === 'white') {
+                      room.whiteNoShowBishopUsed = true;
+                    } else {
+                      room.blackNoShowBishopUsed = true;
+                    }
+                    console.log(`[Forced Summon Check] Successful for ${nextPlayerFullColor}. New FEN: ${room.fen}. Emitting 'bishopSummoned'.`);
+                    
+                    const whiteStatesForEmit: PlayerAdvantageStates = { ...(room.whiteAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.whiteNoShowBishopUsed, noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece }) };
+                    const blackStatesForEmit: PlayerAdvantageStates = { ...(room.blackAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.blackNoShowBishopUsed, noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece }) };
+
+                    io.to(roomId).emit("bishopSummoned", {
+                      newFen: room.fen,
+                      playerColor: nextPlayerFullColor,
+                      summonedSquare: randomEmptySquare,
+                      pieceType: removedPieceDetails.type,
+                      noShowBishopUsed: true,
+                      wasForced: true, // Indicate it was a forced summon
+                      whitePlayerAdvantageStatesFull: whiteStatesForEmit,
+                      blackPlayerAdvantageStatesFull: blackStatesForEmit,
+                    });
+                  } else {
+                    console.error(`[Forced Summon Check] Failed for ${nextPlayerFullColor}: ${forceSummonResult.error}`);
+                  }
+                } else {
+                  console.error("[Forced Summon Check] No empty squares found for forced summon. This is highly unlikely.");
+                }
+              }
+            }
+            // ---- End Forced No-Show Bishop Summon Check ----
+
             console.log(`[sendMove] Move by ${senderColor} validated (not deflected). Final FEN for room ${roomId}: ${room.fen}`);
             
             let moveDataForBroadcast: ServerMovePayload = { 
@@ -1390,6 +1581,10 @@ export function setupSocketHandlers(io: Server) {
                 ...(room.whiteAdvantage?.id === 'queenly_compensation' && room.whiteQueenlyCompensationState && { queenly_compensation: room.whiteQueenlyCompensationState }),
                 ...(room.whiteAdvantage?.id === 'coordinated_push' && room.whiteCoordinatedPushState && { coordinatedPush: room.whiteCoordinatedPushState }),
                 ...(room.whiteCloakState && { cloak: room.whiteCloakState }), 
+                ...(room.whiteAdvantage?.id === 'no_show_bishop' && { // Add No-Show Bishop for white
+                    noShowBishopUsed: room.whiteNoShowBishopUsed,
+                    noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece 
+                }),
             };
             const blackCurrentAdvantageStates: PlayerAdvantageStates = {
                 ...(room.blackAdvantage?.id === 'royal_escort' && room.blackRoyalEscortState && { royalEscort: room.blackRoyalEscortState }),
@@ -1401,6 +1596,10 @@ export function setupSocketHandlers(io: Server) {
                 ...(room.blackAdvantage?.id === 'queenly_compensation' && room.blackQueenlyCompensationState && { queenly_compensation: room.blackQueenlyCompensationState }),
                 ...(room.blackAdvantage?.id === 'coordinated_push' && room.blackCoordinatedPushState && { coordinatedPush: room.blackCoordinatedPushState }),
                 ...(room.blackCloakState && { cloak: room.blackCloakState }), 
+                ...(room.blackAdvantage?.id === 'no_show_bishop' && { // Add No-Show Bishop for black
+                    noShowBishopUsed: room.blackNoShowBishopUsed,
+                    noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece
+                }),
             };
 
             const finalPayloadForReceiveMove = {
@@ -1692,6 +1891,102 @@ export function setupSocketHandlers(io: Server) {
         io.to(opponentSocketId).emit("royalDecreeApplied", { pieceType, restrictedPlayerColor: opponentColor });
       }
       socket.emit("royalDecreeConfirmed");
+    });
+
+    socket.on("summon_no_show_bishop", ({ roomId, payload }: { roomId: string, payload: SummonNoShowBishopPayload }) => {
+      const room = rooms[roomId];
+      const senderId = socket.id;
+      console.log(`[No-Show Bishop Summon] Received request from ${senderId} for room ${roomId}. Payload:`, payload);
+
+      if (!room || !room.fen || !room.white || !room.black) {
+        console.error(`[No-Show Bishop Summon] Room ${roomId} not found or incomplete.`);
+        socket.emit("summonBishopFailed", { message: "Room not found or game not fully started." });
+        return;
+      }
+
+      const serverGame = new Chess(room.fen); // Load current game state
+      let senderColor: "white" | "black" | null = null;
+      let playerAdvantageStatesFromRoom: PlayerAdvantageStates = {};
+
+      if (senderId === room.white) {
+        senderColor = "white";
+        if (room.whiteAdvantage?.id !== 'no_show_bishop') {
+          socket.emit("summonBishopFailed", { message: "You do not have the No-Show Bishop advantage." });
+          return;
+        }
+        playerAdvantageStatesFromRoom = {
+          noShowBishopUsed: room.whiteNoShowBishopUsed,
+          noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece,
+        };
+      } else if (senderId === room.black) {
+        senderColor = "black";
+        if (room.blackAdvantage?.id !== 'no_show_bishop') {
+          socket.emit("summonBishopFailed", { message: "You do not have the No-Show Bishop advantage." });
+          return;
+        }
+        playerAdvantageStatesFromRoom = {
+          noShowBishopUsed: room.blackNoShowBishopUsed,
+          noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece,
+        };
+      } else {
+        console.error(`[No-Show Bishop Summon] Sender ${senderId} is not a player in room ${roomId}.`);
+        socket.emit("summonBishopFailed", { message: "You are not a player in this room." });
+        return;
+      }
+
+      if (serverGame.turn() !== senderColor[0]) {
+        socket.emit("summonBishopFailed", { message: "Not your turn to summon." });
+        return;
+      }
+      
+      console.log(`[No-Show Bishop Summon] Calling handleNoShowBishopServer for ${senderColor}. Current advantage states from room:`, playerAdvantageStatesFromRoom);
+
+      const result = handleNoShowBishopServer(
+        serverGame, // This is a new Chess(room.fen) instance
+        payload,
+        senderColor[0] as 'w' | 'b',
+        playerAdvantageStatesFromRoom
+      );
+
+      if (result.success && result.newFen) {
+        room.fen = result.newFen; // IMPORTANT: Update room.fen and serverGame
+        if (senderColor === 'white') {
+          room.whiteNoShowBishopUsed = true;
+        } else {
+          room.blackNoShowBishopUsed = true;
+        }
+
+        console.log(`[No-Show Bishop Summon] Success for ${senderColor}. New FEN: ${room.fen}. Emitting 'bishopSummoned'.`);
+        
+        // Construct the full advantage states to send with the event
+        const whitePlayerAdvantageStatesFull: PlayerAdvantageStates = {
+            ...(room.whiteAdvantage?.id === 'no_show_bishop' && { 
+                noShowBishopUsed: room.whiteNoShowBishopUsed,
+                noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece 
+            }),
+            // ... include other white advantage states from room if necessary for this event
+        };
+        const blackPlayerAdvantageStatesFull: PlayerAdvantageStates = {
+            ...(room.blackAdvantage?.id === 'no_show_bishop' && {
+                noShowBishopUsed: room.blackNoShowBishopUsed,
+                noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece
+            }),
+            // ... include other black advantage states from room
+        };
+
+        io.to(roomId).emit("bishopSummoned", {
+          newFen: room.fen,
+          playerColor: senderColor,
+          summonedSquare: payload.square,
+          pieceType: payload.piece.type, // This comes from client payload, should match removed piece type
+          noShowBishopUsed: true, // Explicitly send updated used state
+          whitePlayerAdvantageStatesFull, // Send full state for white
+          blackPlayerAdvantageStatesFull, // Send full state for black
+        });
+      } else {
+        console.error(`[No-Show Bishop Summon] Failed for ${senderColor}: ${result.error}`);
+        socket.emit("summonBishopFailed", { message: result.error });
+      }
     });
 
     socket.on("placeSacrificialBlessingPiece", ({ roomId, pieceSquare, toSquare }: { roomId: string; pieceSquare: string; toSquare: string }) => {
