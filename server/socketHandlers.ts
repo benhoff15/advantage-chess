@@ -10,6 +10,7 @@ import { handlePawnRush } from "./logic/advantages/pawnRush";
 import { handleCastleMaster } from "./logic/advantages/castleMaster";
 import { handleAutoDeflect } from "./logic/advantages/autoDeflect";
 import { handleShieldWallServer } from "./logic/advantages/shieldWall";
+import { getVoidStepPath } from './logic/advantages/voidStep';
 import { 
   handleFocusedBishopServer, 
   FocusedBishopAdvantageState 
@@ -27,6 +28,7 @@ import { LightningCaptureState, PawnAmbushState, CoordinatedPushState } from "..
 import { validateCoordinatedPushServerMove } from './logic/advantages/coordinatedPush'; // Added
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
+import { validateVoidStepServerMove } from './logic/advantages/voidStep';
 
 console.log("setupSocketHandlers loaded");
 
@@ -104,6 +106,8 @@ export type RoomState = {
   blackNoShowBishopUsed?: boolean;
   whiteNoShowBishopRemovedPiece?: { square: Square, type: PieceSymbol };
   blackNoShowBishopRemovedPiece?: { square: Square, type: PieceSymbol };
+  whiteVoidStepState?: { isActive: boolean; hasUsed: boolean };
+  blackVoidStepState?: { isActive: boolean; hasUsed: boolean };
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -196,6 +200,8 @@ export function setupSocketHandlers(io: Server) {
           blackNoShowBishopUsed: false,
           whiteNoShowBishopRemovedPiece: undefined,
           blackNoShowBishopRemovedPiece: undefined,
+          whiteVoidStepState: { isActive: false, hasUsed: false },
+          blackVoidStepState: { isActive: false, hasUsed: false },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), Cloak (undefined), and No-Show Bishop (false, undefined).`);
@@ -238,6 +244,8 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackNoShowBishopUsed === undefined) room.blackNoShowBishopUsed = false;
         if (room.whiteNoShowBishopRemovedPiece === undefined) room.whiteNoShowBishopRemovedPiece = undefined;
         if (room.blackNoShowBishopRemovedPiece === undefined) room.blackNoShowBishopRemovedPiece = undefined;
+        if (room.whiteVoidStepState === undefined) room.whiteVoidStepState = { isActive: false, hasUsed: false };
+        if (room.blackVoidStepState === undefined) room.blackVoidStepState = { isActive: false, hasUsed: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -864,6 +872,43 @@ export function setupSocketHandlers(io: Server) {
             });
             moveResult = null;
           }
+        } else if (receivedMove.special === "void_step") {
+          // --- Void Step Server Validation ---
+          const voidStepState = senderColor === 'white' ? room.whiteVoidStepState : room.blackVoidStepState;
+          const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+           if (!voidStepState || playerAdvantage?.id !== "void_step" || !voidStepState.isActive || voidStepState.hasUsed) {
+            socket.emit("invalidMove", { message: "Void Step not available or already used.", move: clientMoveData });
+            return;
+           }
+           const validationGame = new Chess(originalFenBeforeAttempt!);
+           const vsResult = validateVoidStepServerMove({
+            game: validationGame,
+            clientMoveData: receivedMove,
+            currentFen: originalFenBeforeAttempt!,
+            playerColor: senderColor![0] as 'w' | 'b',
+            voidStepState,
+           });
+
+           moveResult = vsResult.moveResult;
+
+           if (moveResult && vsResult.nextFen) {
+            serverGame.load(vsResult.nextFen);
+            room.fen = vsResult.nextFen;
+            // Mark Void Step as used and inactive
+            if (senderColor === 'white') room.whiteVoidStepState = vsResult.updatedVoidStepState!;
+            else room.blackVoidStepState = vsResult.updatedVoidStepState!;
+            console.log(`[sendMove] Void Step by ${senderColor} validated. New FEN: ${room.fen}.`);
+           } else {
+            console.warn(`[sendMove] Void Step by ${senderColor} failed validation: ${vsResult.error}`);
+            socket.emit("invalidMove", {
+              message: vsResult.error || "Void Step move invalid or illegal.",
+              move: clientMoveData
+            });
+            moveResult = null;
+            return;
+           }
+
+
         } else if (receivedMove.special === "royal_escort") {
           const playerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
           if (!currentPlayerRoyalEscortState_RE || playerAdvantage?.id !== "royal_escort") {
@@ -1234,7 +1279,7 @@ export function setupSocketHandlers(io: Server) {
 
             // ---- Queen's Domain State Update Post-Successful-Move (and not deflected) ----
             const playerAdvantageForQD = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
-            // playerQueensDomainState was fetched and initialized if necessary earlier in sendMove
+            // playerQueensDomainState was fetched and initialized if necessary earlier in sendMove.
             if (playerAdvantageForQD?.id === 'queens_domain' && playerQueensDomainState) {
               if (clientMoveData.special === 'queens_domain_move' && !playerQueensDomainState.hasUsed && moveResult) { // Check moveResult again to be sure
                 console.log(`[SocketHandlers sendMove] Queen's Domain successfully used by ${senderColor}. Updating state.`);
@@ -1663,7 +1708,7 @@ export function setupSocketHandlers(io: Server) {
 
             // ---- Queen's Domain State Update Post-Move ----
             const playerAdvantageForQD = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
-            // Use playerQueensDomainState which was fetched and initialized if necessary
+            // use playerQueensDomainState which was fetched and initialized if necessary
             if (playerAdvantageForQD?.id === 'queens_domain' && playerQueensDomainState) {
               if (clientMoveData.special === 'queens_domain_move' && !playerQueensDomainState.hasUsed && moveResult) { // Check moveResult to ensure QD was successful
                 console.log(`[SocketHandlers] Queen's Domain used by ${senderColor} for move. Updating state.`);
@@ -1955,7 +2000,6 @@ export function setupSocketHandlers(io: Server) {
         } else {
           room.blackNoShowBishopUsed = true;
         }
-
         console.log(`[No-Show Bishop Summon] Success for ${senderColor}. New FEN: ${room.fen}. Emitting 'bishopSummoned'.`);
         
         // Construct the full advantage states to send with the event
@@ -2127,5 +2171,31 @@ export function setupSocketHandlers(io: Server) {
       // Can add else if for other advantages that might have client-toggleable active states
     });
 
-  });
-}
+    // Add handler for activating Void Step
+    socket.on('activate_void_step', () => {
+      const roomId = Array.from(socket.rooms)[1];
+      if (!roomId) return;
+
+      const room = rooms[roomId];
+      if (!room) return;
+
+      const playerColor = socket.id === room.white ? 'w' : socket.id === room.black ? 'b' : null;
+      if (!playerColor) return;
+
+      const voidStepState = playerColor === 'w' ? room.whiteVoidStepState : room.blackVoidStepState;
+      if (voidStepState?.hasUsed) return;
+
+      if (playerColor === 'w') {
+        room.whiteVoidStepState = { isActive: true, hasUsed: false };
+      } else {
+        room.blackVoidStepState = { isActive: true, hasUsed: false };
+      }
+
+      // Notify clients of the activation
+      io.to(roomId).emit('advantageStateUpdated', {
+        voidStep: playerColor === 'w' ? room.whiteVoidStepState : room.blackVoidStepState
+      });
+    });
+
+  }); // <-- closes io.on("connection", ...)
+} // <-- closes setupSocketHandlers

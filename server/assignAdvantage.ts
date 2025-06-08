@@ -23,9 +23,9 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "no_show_bishop",
-    name: "No-Show Bishop",
-    description: "Leave one bishop off the board. You may summon it to any empty square before turn 10.",
+  { id: "void_step",
+    name: "Void Step",
+    description: "One piece can pass through other pieces once.",
     rarity: "rare"
   },
   { 

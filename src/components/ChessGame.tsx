@@ -1,13 +1,13 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams } from "react-router-dom";
-import { Chess, PieceSymbol } from "chess.js";
+import { Chess, PieceSymbol, Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
-import { Square } from "chess.js";
 import { socket } from "../socket";
-import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState, SummonNoShowBishopPayload, PlayerAdvantageStates as FullPlayerAdvantageStates } from "../../shared/types"; // Import ServerMovePayload, SummonNoShowBishopPayload, and rename PlayerAdvantageStates
+import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState, SummonNoShowBishopPayload, PlayerAdvantageStates as FullPlayerAdvantageStates } from "../../shared/types";
 import { useSacrificialBlessingStore, SacrificialBlessingPiece } from "../logic/advantages/sacrificialBlessing";
-import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield"; // Added
+import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield";
 import { isSummonAvailable } from "../logic/advantages/noShowBishop";
+import { isVoidStepAvailable, canPieceUseVoidStep, getValidVoidStepMoves } from '../logic/advantages/voidStep';
 // Square is already imported from chess.js
 import {
   handlePawnRushClient,
@@ -50,7 +50,6 @@ import {
   handleKnightmareClientMove,
 } from "../logic/advantages/knightmare";
 import { shouldShowQueenlyCompensationToast } from '../logic/advantages/queenlyCompensation';
-import { Move } from "chess.js";
 import { CoordinatedPushState } from "../../shared/types";
 import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from "../logic/advantages/coordinatedPush";
 import { shouldHidePiece } from "../logic/advantages/cloak";
@@ -127,6 +126,9 @@ const [restrictedToPieceType, setRestrictedToPieceType] = useState<string | null
 const [royalDecreeMessage, setRoyalDecreeMessage] = useState<string | null>(null);
 const [queensDomainState, setQueensDomainState] = useState<QueensDomainClientState | null>(null);
 const [isQueensDomainToggleActive, setIsQueensDomainToggleActive] = useState(false);
+const [isVoidStepToggleActive, setIsVoidStepToggleActive] = useState(false);
+const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+const [validMoves, setValidMoves] = useState<Square[]>([]);
 const [knightmareState, setKnightmareState] = useState<{ hasUsed: boolean } | null>(null);
 const [knightmareActiveKnight, setKnightmareActiveKnight] = useState<Square | null>(null);
 const [knightmarePossibleMoves, setKnightmarePossibleMoves] = useState<Square[]>([]);
@@ -158,6 +160,11 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     reset: resetSacrificialBlessingState,
   } = useSacrificialBlessingStore();
   const [hasUsedMySacrificialBlessing, setHasUsedMySacrificialBlessing] = useState(false);
+
+  const [isPlayerTurn, setIsPlayerTurn] = useState(false);
+  const [playerColor, setPlayerColor] = useState<'white' | 'black' | null>(null);
+  const [whitePlayerAdvantageStates, setWhitePlayerAdvantageStates] = useState<PlayerAdvantageStates | null>(null);
+  const [blackPlayerAdvantageStates, setBlackPlayerAdvantageStates] = useState<PlayerAdvantageStates | null>(null);
 
   useEffect(() => {
     if (myAdvantage?.id !== 'sacrificial_blessing') {
@@ -283,6 +290,31 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             setSecondPawnSelected(null);
             console.log("[CP DEBUG] Coordinated Push state reset after usedThisTurn=true");
         }
+      } else if (data.voidStep && myAdvantage?.id === 'void_step') {
+        console.log("[ChessGame] Received advantageStateUpdated for Void Step:", data.voidStep);
+        if (color === 'white') {
+          setWhitePlayerAdvantageStates(prev => ({
+            ...prev,
+            voidStep: data.voidStep
+          }));
+        } else if (color === 'black') {
+          setBlackPlayerAdvantageStates(prev => ({
+            ...prev,
+            voidStep: data.voidStep
+          }));
+        }
+      }
+      if (data.whitePlayerAdvantageStates) {
+        setWhitePlayerAdvantageStates(prev => ({
+          ...prev,
+          ...data.whitePlayerAdvantageStates,
+        }));
+      }
+      if (data.blackPlayerAdvantageStates) {
+        setBlackPlayerAdvantageStates(prev => ({
+          ...prev,
+          ...data.blackPlayerAdvantageStates,
+        }));
       }
     };
 
@@ -304,6 +336,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     const handleColorAssigned = (assignedColor: "white" | "black") => {
       console.log(`[ChessGame event] colorAssigned: ${assignedColor}`);
       setColor(assignedColor);
+      setPlayerColor(assignedColor);
     };
     socket.on("colorAssigned", handleColorAssigned);
 
@@ -742,6 +775,20 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       } else if (data.advantage.id === 'queenly_compensation') {
         setQueenlyCompensationState({ hasUsed: false });
         console.log("[ChessGame handleAdvantageAssigned] Queenly Compensation advantage assigned, state initialized.");
+      } else if (data.advantage.id === 'void_step') {
+        const voidStepState = { isActive: false, hasUsed: false };
+        if (color === 'white') {
+          setWhitePlayerAdvantageStates(prev => ({
+            ...prev,
+            voidStep: voidStepState
+          }));
+        } else if (color === 'black') {
+          setBlackPlayerAdvantageStates(prev => ({
+            ...prev,
+            voidStep: voidStepState
+          }));
+        }
+        console.log("[ChessGame handleAdvantageAssigned] Void Step advantage assigned, state initialized:", voidStepState);
       } else if (data.advantage.id === 'arcane_reinforcement') {
         if (data.advantageDetails && typeof data.advantageDetails.spawnedSquare === 'string' && data.advantageDetails.spawnedSquare.length > 0) {
           setArcaneReinforcementSpawnedSquare(data.advantageDetails.spawnedSquare);
@@ -1064,7 +1111,73 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   }, [fen, color, restrictedToPieceType, knightmareActiveKnight, game]); 
 
 
+  const handleActivateVoidStep = () => {
+    if (!socket) return;
+    console.log("[Void Step UI Debug] Activating Void Step");
+    setIsVoidStepToggleActive(true);  // Set the toggle state to true
+    socket.emit('activate_void_step');
+  };
+
+  const currentPlayerAdvantageStates = playerColor === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
+  const canUseVoidStep = currentPlayerAdvantageStates && isVoidStepAvailable(currentPlayerAdvantageStates);
+
+  console.log("[Void Step UI Debug] State:", {
+    myAdvantage,
+    playerColor,
+    currentPlayerAdvantageStates,
+    canUseVoidStep,
+    isPlayerTurn: color && game.turn() === color[0],
+    voidStepState: currentPlayerAdvantageStates?.voidStep,
+    isVoidStepToggleActive
+  });
+
+  // Add debug logs in onSquareClick
   const onSquareClick = (squareClicked: Square) => {
+    console.log("[Void Step UI Debug] Square clicked:", {
+      square: squareClicked,
+      isVoidStepToggleActive,
+      selectedSquare,
+      validMoves,
+      piece: game.get(squareClicked)
+    });
+
+    // Void Step handling
+    if (
+      myAdvantage?.id === "void_step" &&
+      isVoidStepToggleActive &&
+      currentPlayerAdvantageStates?.voidStep?.isActive &&
+      !currentPlayerAdvantageStates.voidStep.hasUsed &&
+      color &&
+      game.turn() === color[0]
+    ) {
+      // PATCH: If you click a piece of yours (not king), always update highlights and selectedSquare
+      const piece = game.get(squareClicked);
+      if (piece && piece.color === color[0] && piece.type !== 'k') {
+        console.log("[Void Step UI Debug] Valid piece selected for Void Step");
+        const moves = getValidVoidStepMoves(game, squareClicked, color[0], currentPlayerAdvantageStates.voidStep);
+        console.log("[Void Step UI Debug] Valid moves for piece:", moves);
+        setSelectedSquare(squareClicked);
+        setValidMoves(moves);
+        return; // PATCH: Always return after highlighting, do not fall through
+      }
+      // If you click a highlighted valid move, make the move
+      if (selectedSquare && validMoves.includes(squareClicked)) {
+        console.log("[Void Step UI Debug] Attempting Void Step move:", {
+          from: selectedSquare,
+          to: squareClicked,
+          validMoves
+        });
+        makeMove(selectedSquare, squareClicked);
+        setSelectedSquare(null);
+        setValidMoves([]);
+        return;
+      }
+      // PATCH: If you click anywhere else, clear selection/highlights
+      setSelectedSquare(null);
+      setValidMoves([]);
+      return;
+    }
+
     // No-Show Bishop Summon Logic
     if (
       isSummonModeActive &&
@@ -1299,6 +1412,20 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       }
       return; 
     }
+
+    if (selectedSquare) {
+      const move = makeMove(selectedSquare, squareClicked);
+      if (move) {
+        setSelectedSquare(null);
+        setValidMoves([]);
+      }
+    } else {
+      const piece = game.get(squareClicked);
+      if (piece && piece.color === color?.[0]) {
+        setSelectedSquare(squareClicked);
+        setValidMoves(game.moves({ square: squareClicked, verbose: true }).map(move => move.to as Square));
+      }
+    }
   };
   
   const handleSquareClickForSwap = (square: string) => {
@@ -1473,7 +1600,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         if (game.isCheckmate()) {
           const winner = game.turn() === "w" ? "black" : "white";
           setGameOverMessage(`${winner} wins by checkmate`);
-          socket.emit("gameOver", { roomId, message: `${myColor} wins by checkmate!`, winnerColor: myColor });
+          socket.emit("gameOver", { roomId, message: `${winner} wins by checkmate!`, winnerColor: winner });
         } else if (game.isDraw()) {
           setGameOverMessage("Draw");
           socket.emit("gameDraw", { roomId, message: "Draw!" });
@@ -1512,7 +1639,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       return null; 
     }
 
-    let move: any; 
+    let move: any;
 
     if (
       myAdvantage?.id === "lightning_capture" &&
@@ -1903,17 +2030,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                             setAwaitingSecondPush(false);
                             setFirstPushDetails(null);
                             setEligibleSecondPawns([]);
-                            setSecondPawnSelected(null); // Ensures reset after successful drag-drop
-                            
-                            game.move(potentialSecondMove); // Apply second move to main game instance
-                            setFen(game.fen());
-                            // Check for game over after applying the full move
-                            if (game.isCheckmate()) {
-                              const winnerLogic = game.turn() === "w" ? "black" : "white";
-                              setGameOverMessage(`${winnerLogic} wins by checkmate`);
-                              socket.emit("gameOver", { roomId, message: `${color} wins by checkmate!`, winnerColor: color });
-                            }
-                            return potentialSecondMove; 
+                            setSecondPawnSelected(null);
                         } else {
                             console.warn("[CP DEBUG] Client validation for Coordinated Push (second move) failed.");
                             game.load(fenSnapshotBeforeMove.current); // Revert first local move
@@ -1952,6 +2069,31 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         }
     }
 
+    if (
+      myAdvantage?.id === "void_step" &&
+      currentPlayerAdvantageStates?.voidStep?.isActive &&
+      !currentPlayerAdvantageStates?.voidStep?.hasUsed &&
+      color
+    ) {
+      console.log("[ChessGame makeMove] Attempting Void Step move from", from, "to", to);
+      const piece = game.get(from as Square);
+      if (piece && piece.color === color[0] && piece.type !== 'k') {
+        if (canPieceUseVoidStep(game, from as Square, to as Square, color[0] as 'w' | 'b', currentPlayerAdvantageStates.voidStep)) {
+          const movePayload = {
+            from,
+            to,
+            special: 'void_step',
+            color: color
+          };
+          console.log("[ChessGame makeMove] Emitting Void Step move:", movePayload);
+          socket.emit("sendMove", { roomId, move: movePayload });
+          return null;
+        } else {
+          alert("Invalid Void Step move. The move must be legal without considering blocking pieces.");
+          return null;
+        }
+      }
+    }
 
       if (!move && isKnightmareMove && myAdvantage?.id === 'knightmare' && knightmareState && color) {
         if (from !== knightmareActiveKnight) { 
@@ -2150,6 +2292,108 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     }
   };
 
+  const customSquareStyles = useMemo(() => {
+    const styles: { [key: string]: React.CSSProperties } = {};
+    
+    // Highlight selected square
+    if (selectedSquare) {
+      styles[selectedSquare] = {
+        background: "rgba(255, 255, 0, 0.4)",
+        cursor: "pointer"
+      };
+    }
+
+    // Highlight valid moves
+    validMoves.forEach(square => {
+      styles[square] = {
+        background: "rgba(220, 180, 255, 0.4)",
+        cursor: "pointer"
+      };
+    });
+
+    // Void Step Highlighting
+    if (myAdvantage?.id === "void_step" && isVoidStepToggleActive && currentPlayerAdvantageStates?.voidStep?.isActive && !currentPlayerAdvantageStates.voidStep.hasUsed && color && game.turn() === color[0]) {
+      console.log("[Void Step UI Debug] Applying Void Step highlighting", {
+        selectedSquare,
+        validMoves
+      });
+      
+      if (selectedSquare) {
+        console.log("[Void Step UI Debug] Highlighting selected square:", selectedSquare);
+        styles[selectedSquare] = { 
+          ...styles[selectedSquare], 
+          background: "rgba(255, 255, 0, 0.4)",
+          cursor: "pointer"
+        };
+        
+        validMoves.forEach(sq => {
+          console.log("[Void Step UI Debug] Highlighting valid move:", sq);
+          styles[sq] = { 
+            ...styles[sq], 
+         background: "rgba(220, 180, 255, 0.4)",
+            cursor: "pointer"
+          };
+        });
+      }
+    }
+
+    if (isSacrificialBlessingActive) {
+      availablePiecesForBlessing.forEach(p => {
+        styles[p.square] = { ...styles[p.square], background: "rgba(173, 216, 230, 0.7)", cursor: 'pointer' };
+      });
+      if (selectedPieceForBlessing) {
+        // Highlight all empty squares as possible targets for placement
+        const blessingFenForStyling = useSacrificialBlessingStore.getState().currentBlessingFen;
+        if (!blessingFenForStyling) {
+          console.error('[SB Debug customSquareStyles] No blessingFenForStyling available from store.');
+          return styles; 
+        }
+        const stylingGame = new Chess();
+        try {
+          stylingGame.load(blessingFenForStyling);
+        } catch (e) {
+          console.error("[SB Debug customSquareStyles] Error loading FEN from store into stylingGame:", e);
+          return styles; 
+        }
+        // Highlight all empty squares
+        for (let file = 0; file < 8; file++) {
+          for (let rank = 1; rank <= 8; rank++) {
+            const sq = String.fromCharCode(97 + file) + rank as Square;
+            if (!stylingGame.get(sq)) {
+              styles[sq] = { ...styles[sq], background: "rgba(255,255,150,0.4)", cursor: "pointer" };
+            }
+          }
+        }
+        // Optionally, highlight the selected piece
+        styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0,128,255,0.5)" };
+      }
+    }
+
+    return styles;
+  }, [selectedSquare, validMoves, isVoidStepToggleActive, currentPlayerAdvantageStates, color, game.turn()]);
+
+  // Add handler for advantage state update
+  const handleAdvantageStateUpdate = (data: any) => {
+    console.log("[ChessGame] Received advantageStateUpdated for Void Step:", data);
+    if (data.advantageId === 'void_step') {
+      if (playerColor === 'white') {
+        setWhitePlayerAdvantageStates(prev => ({
+          ...prev,
+          voidStep: data.state
+        }));
+      } else {
+        setBlackPlayerAdvantageStates(prev => ({
+          ...prev,
+          voidStep: data.state
+        }));
+      }
+      // If the advantage is deactivated, also update the toggle state
+      if (!data.state.isActive) {
+        setIsVoidStepToggleActive(false);
+      }
+    }
+  };
+
   return (
     <div style={{ padding: "20px", maxWidth: 600, margin: "0 auto" }}>
       <h2>
@@ -2293,11 +2537,11 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
               style={{ margin: "5px", padding: "8px 12px", background: isQueensDomainToggleActive ? "lightblue" : "#efefef", border: `2px solid ${isQueensDomainToggleActive ? "blue" : (queensDomainState?.hasUsed ? "red" : "grey")}` }}
               disabled={queensDomainState?.hasUsed}
             >
-              👑 {isQueensDomainToggleActive ? "Deactivate" : "Use"} Queen’s Domain
+              👑 {isQueensDomainToggleActive ? "Deactivate" : "Use"} Queen's Domain
             </button>
           )}
           {myAdvantage?.id === "queens_domain" && queensDomainState?.hasUsed && (
-            <p style={{color: "red", margin: "5px"}}><em>Queen’s Domain has been used.</em></p>
+            <p style={{color: "red", margin: "5px"}}><em>Queen's Domain has been used.</em></p>
           )}
 
           {/* Coordinated Push Button and Info */}
@@ -2368,6 +2612,14 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           )}
            {myAdvantage?.id === 'no_show_bishop' && noShowBishopState && !noShowBishopState.used && game && !isSummonAvailable(game.history().length, noShowBishopState.used) && (
             <p style={{ marginTop: '5px', fontStyle: 'italic', color: 'grey' }}>The period to summon your No-Show Bishop has expired.</p>
+          )}
+          {myAdvantage?.id === 'void_step' && canUseVoidStep && (
+            <button
+              className={`advantage-button ${currentPlayerAdvantageStates?.voidStep?.isActive ? 'active' : ''}`}
+              onClick={handleActivateVoidStep}
+            >
+              Activate Void Step
+            </button>
           )}
         </div>
       )}
@@ -2479,37 +2731,30 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                 styles[p.square] = { ...styles[p.square], background: "rgba(173, 216, 230, 0.7)", cursor: 'pointer' };
               });
               if (selectedPieceForBlessing) {
+                // Highlight all empty squares as possible targets for placement
                 const blessingFenForStyling = useSacrificialBlessingStore.getState().currentBlessingFen;
                 if (!blessingFenForStyling) {
                   console.error('[SB Debug customSquareStyles] No blessingFenForStyling available from store.');
                   return styles; 
                 }
-
                 const stylingGame = new Chess();
-                console.log('[SB Debug customSquareStyles] stylingGame created. Initial FEN:', stylingGame.fen());
                 try {
-                  stylingGame.load(blessingFenForStyling); 
-                  console.log('[SB Debug customSquareStyles] stylingGame loaded with store FEN. Current FEN:', stylingGame.fen());
+                  stylingGame.load(blessingFenForStyling);
                 } catch (e) {
                   console.error("[SB Debug customSquareStyles] Error loading FEN from store into stylingGame:", e);
                   return styles; 
                 }
-                console.log('[SB Debug customSquareStyles] FEN from store for styling:', stylingGame.fen()); 
-                let emptySquaresCount = 0;
-                styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0, 128, 0, 0.7)" };
-                
-                for (let r = 1; r <= 8; r++) {
-                  for (let c = 0; c < 8; c++) {
-                    const s = String.fromCharCode(97 + c) + r;
-                    const pieceOnSquare = stylingGame.get(s as Square);
-                    console.log('[SB Debug customSquareStyles] Square:', s, 'Piece:', pieceOnSquare, 'Typeof Piece:', typeof pieceOnSquare, 'is Empty (null or undefined):', pieceOnSquare === null || typeof pieceOnSquare === 'undefined');
-                    if (pieceOnSquare === null || typeof pieceOnSquare === 'undefined') {
-                      emptySquaresCount++;
-                      styles[s] = { ...(styles[s] || {}), background: "rgba(255, 255, 0, 0.4)", cursor: 'pointer' };
+                // Highlight all empty squares
+                for (let file = 0; file < 8; file++) {
+                  for (let rank = 1; rank <= 8; rank++) {
+                    const sq = String.fromCharCode(97 + file) + rank as Square;
+                    if (!stylingGame.get(sq)) {
+                      styles[sq] = { ...styles[sq], background: "rgba(255,255,150,0.4)", cursor: "pointer" };
                     }
                   }
                 }
-                console.log('[SB Debug customSquareStyles] Empty squares based on store FEN:', emptySquaresCount);
+                // Optionally, highlight the selected piece
+                styles[selectedPieceForBlessing.square] = { ...styles[selectedPieceForBlessing.square], background: "rgba(0,128,255,0.5)" };
               }
             }
 
@@ -2532,6 +2777,16 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             }
             if (secondPawnSelected) { // Highlight selected second pawn for click-click
                 styles[secondPawnSelected] = { ...styles[secondPawnSelected], background: "rgba(0, 128, 0, 0.7)" }; // Green when selected
+            }
+
+            // Void Step Highlighting
+            if (myAdvantage?.id === "void_step" && isVoidStepToggleActive && currentPlayerAdvantageStates?.voidStep?.isActive && !currentPlayerAdvantageStates.voidStep.hasUsed && color && game.turn() === color[0]) {
+              if (selectedSquare) {
+                styles[selectedSquare] = { ...styles[selectedSquare], background: "rgba(255, 255, 0, 0.4)" };
+                validMoves.forEach(sq => {
+                  styles[sq] = { ...styles[sq], background: "rgba(220, 180, 255, 0.4)" };
+                });
+              }
             }
 
             return styles;

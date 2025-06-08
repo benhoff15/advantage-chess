@@ -40,7 +40,7 @@ export interface CoordinatedPushState {
 
 export interface CloakState {
   pieceId: string;          // e.g., "wNb1" (white Knight on b1) or "bRd8" (black Rook on d8)
-  turnsRemaining: number;   // starts at 20, decrements each of the owner’s moves
+  turnsRemaining: number;   // starts at 20, decrements each of the owner's moves
 }
 
 export interface PlayerAdvantageStates {
@@ -65,6 +65,10 @@ export interface PlayerAdvantageStates {
   cloak?: CloakState; // Add this line
   noShowBishopUsed?: boolean;
   noShowBishopRemovedPiece?: { square: string, type: string };
+  voidStep?: {
+    isActive: boolean;
+    hasUsed: boolean;
+  };
 }
 
 export interface SacrificialBlessingPendingState {
