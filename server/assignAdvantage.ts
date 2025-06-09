@@ -23,9 +23,9 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
 
 
 const testSequence: Advantage[] = [
-  { id: "void_step",
-    name: "Void Step",
-    description: "One piece can pass through other pieces once.",
+  { id: "recall",
+    name: "Recall",
+    description: "Teleport any piece to its position 3 turns ago, once.",
     rarity: "rare"
   },
   { 

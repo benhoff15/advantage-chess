@@ -1,9 +1,10 @@
 import { Server, Socket } from "socket.io";
 import { Chess, Move, Square, PieceSymbol } from "chess.js"; // Import Chess and Move
 import { assignRandomAdvantage } from "./assignAdvantage";
-import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState, CloakState, SummonNoShowBishopPayload } from "../shared/types";
+import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, ServerMovePayload, OpeningSwapState, SacrificialBlessingPendingState, CloakState, SummonNoShowBishopPayload, RecallState } from "../shared/types";
 import { assignCloakedPiece, handleCloakTurn, removeCloakOnCapture } from "./logic/advantages/cloak";
 import { applyArcaneReinforcement } from "./logic/advantages/arcaneReinforcement";
+import { validateRecallServerWithUID } from './logic/advantages/recall';
 import { handleNoShowBishopServer } from './logic/advantages/noShowBishop';
 import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
@@ -59,6 +60,15 @@ type PlayerStats = {
   elo: number;
 };
 
+export type PieceTrackingInfo = {
+  type: PieceSymbol;
+  color: 'w' | 'b';
+  square: Square | null; // null if captured
+  alive: boolean;
+  history: Square[]; // squares occupied, in order
+  promotedTo?: PieceSymbol; // for promotions, optional
+};
+
 export type RoomState = {
   white?: string;
   black?: string;
@@ -108,6 +118,12 @@ export type RoomState = {
   blackNoShowBishopRemovedPiece?: { square: Square, type: PieceSymbol };
   whiteVoidStepState?: { isActive: boolean; hasUsed: boolean };
   blackVoidStepState?: { isActive: boolean; hasUsed: boolean };
+  fenHistory?: string[];
+  whiteRecallState?: RecallState;
+  blackRecallState?: RecallState;
+  pieceTracking?: Record<string, PieceTrackingInfo>;
+  pieceTrackingHistory?: Record<string, PieceTrackingInfo>[];
+
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -202,9 +218,12 @@ export function setupSocketHandlers(io: Server) {
           blackNoShowBishopRemovedPiece: undefined,
           whiteVoidStepState: { isActive: false, hasUsed: false },
           blackVoidStepState: { isActive: false, hasUsed: false },
+          fenHistory: [],
+          whiteRecallState: { used: false },
+          blackRecallState: { used: false },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), Cloak (undefined), and No-Show Bishop (false, undefined).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), Cloak (undefined), No-Show Bishop (false, undefined), fenHistory ([]), and Recall ({used: false}).`);
       } else {
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -246,6 +265,9 @@ export function setupSocketHandlers(io: Server) {
         if (room.blackNoShowBishopRemovedPiece === undefined) room.blackNoShowBishopRemovedPiece = undefined;
         if (room.whiteVoidStepState === undefined) room.whiteVoidStepState = { isActive: false, hasUsed: false };
         if (room.blackVoidStepState === undefined) room.blackVoidStepState = { isActive: false, hasUsed: false };
+        if (room.fenHistory === undefined) room.fenHistory = [];
+        if (room.whiteRecallState === undefined) room.whiteRecallState = { used: false };
+        if (room.blackRecallState === undefined) room.blackRecallState = { used: false };
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -352,6 +374,27 @@ export function setupSocketHandlers(io: Server) {
         // set the definitive starting FEN for the room.
         room.fen = initialGame.fen();
         console.log(`[joinRoom] Definitive starting FEN for room ${roomId} after all pre-game advantages: ${room.fen}`);
+
+        // --- Assign unique IDs to all pieces for tracking ---
+        room.pieceTracking = {};
+        let uidCounter = 1;
+        const chessForTracking = new Chess(room.fen);
+        for (let r = 1; r <= 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            const square = (String.fromCharCode(97 + c) + r) as Square;
+            const piece = chessForTracking.get(square);
+            if (piece) {
+              const uid = `${piece.color}_${piece.type}_${uidCounter++}`;
+              room.pieceTracking[uid] = {
+                type: piece.type,
+                color: piece.color,
+                square,
+                alive: true,
+                history: [square],
+              };
+            }
+          }
+        }
 
     // Initialize Cloak State for White Player
     if (room.whiteAdvantage?.id === 'cloak' && room.white) {
@@ -526,6 +569,10 @@ export function setupSocketHandlers(io: Server) {
         // ---- END Advantage Assignment and State Init ----
         
         // After all advantages are processed and initial FEN is set (including Arcane Reinforcement pieces):
+        // Add initial FEN to history
+        if (room.fen && room.fenHistory && room.fenHistory.length === 0) {
+          room.fenHistory.push(room.fen);
+        }
         io.to(roomId).emit("gameStart", { fen: room.fen, whitePlayer: room.white, blackPlayer: room.black });
         io.to(roomId).emit("opponentJoined"); // This might be redundant if gameStart implies opponent is there.
                                             // Or, it could be useful for client-side logic that specifically waits for this.
@@ -1119,6 +1166,7 @@ export function setupSocketHandlers(io: Server) {
                 moveResult = null; // Nullify moveResult
               }
             }
+            room.fen = serverGame.fen();
           }
         }
         // End of special/standard move blocks. moveResult is either a valid Move object or null.
@@ -1126,6 +1174,53 @@ export function setupSocketHandlers(io: Server) {
         
         // Universal post-move processing (if moveResult is not null)
         if (moveResult) {
+          // --- Piece Tracking Update ---
+          if (room.pieceTracking) {
+            // Find the UID of the piece that moved
+            let movedPieceUid: string | undefined;
+            for (const [uid, info] of Object.entries(room.pieceTracking)) {
+              if (
+                info.square === moveResult.from &&
+                info.type === moveResult.piece &&
+                info.color === senderColor[0] &&
+                info.alive
+              ) {
+                movedPieceUid = uid;
+                break;
+              }
+            }
+            if (movedPieceUid) {
+              // Update the piece's square to the new position
+              const movedInfo = room.pieceTracking[movedPieceUid];
+              movedInfo.square = moveResult.to;
+              movedInfo.history.push(moveResult.to);
+
+              // Handle promotion
+              if (moveResult.promotion) {
+                movedInfo.promotedTo = moveResult.promotion as PieceSymbol;
+                movedInfo.type = moveResult.promotion as PieceSymbol;
+              }
+            }
+
+            // Handle captures: mark captured piece as not alive and square = null
+            if (moveResult.captured) {
+              for (const [uid, info] of Object.entries(room.pieceTracking)) {
+                if (
+                  info.square === moveResult.to &&
+                  info.type === moveResult.captured &&
+                  info.color !== senderColor[0] &&
+                  info.alive
+                ) {
+                  info.alive = false;
+                  info.square = null;
+                  info.history.push(moveResult.to);
+                  break;
+                }
+              }
+            }
+          }
+          // --- End Piece Tracking Update ---
+
           let pawnAmbushFinalState: PawnAmbushState | undefined;
           let fenAfterPotentialAmbush = serverGame.fen(); // FEN after standard move, before ambush logic
           let ambushAppliedThisTurn = false;
@@ -1168,14 +1263,36 @@ export function setupSocketHandlers(io: Server) {
           if (isDeflected) {
             serverGame.load(originalFenBeforeAttempt); // Revert game instance to state before player's move
             room.fen = originalFenBeforeAttempt;      // Revert authoritative room FEN
+            // We DO NOT add originalFenBeforeAttempt to fenHistory again if it's already the last entry
+            // or if fenHistory is empty (which implies originalFen is the starting FEN already added).
+            // However, if a move was made, then deflected, the fenHistory might have the deflected FEN.
+            // It should be removed.
+            if (room.fenHistory && room.fenHistory.length > 0 && room.fenHistory[room.fenHistory.length -1] !== originalFenBeforeAttempt) {
+              // This implies a FEN was added then the move leading to it was deflected.
+              // Let's assume the FEN added corresponded to fenAfterPotentialAmbush.
+              // If fenHistory's last element is fenAfterPotentialAmbush, pop it.
+              // This needs careful handling: only pop if the *deflected* FEN was indeed added.
+              // The current logic adds `fenAfterPotentialAmbush` to history *before* deflection check.
+              // So, if deflected, we need to remove that last added FEN.
+              const lastFenInHistory = room.fenHistory.pop();
+              if (lastFenInHistory !== fenAfterPotentialAmbush) {
+                  // This case should ideally not happen if logic is correct.
+                  // If it does, push back the popped FEN as it wasn't the one to remove.
+                  if (lastFenInHistory) room.fenHistory.push(lastFenInHistory);
+                  console.warn("[sendMove Deflection] Popped FEN from history was not the deflected FEN. History might be inconsistent.");
+              } else {
+                  console.log(`[sendMove Deflection] Removed deflected FEN ${lastFenInHistory} from history.`);
+              }
+            }
+
             // Ambush is implicitly reverted because its changes to serverGame are wiped by load(),
             // and pawnAmbushFinalState is not committed to the room state.
             console.log(`[sendMove] Move by ${senderColor} was deflected. FEN reverted to ${originalFenBeforeAttempt}.`);
             socket.emit("moveDeflected", { move: clientMoveData }); 
           } else {
             // NOT deflected. Commit everything.
-            // serverGame at this point has the FEN of fenAfterPotentialAmbush
-            room.fen = fenAfterPotentialAmbush; // Commit FEN (post-move, post-ambush)
+            // room.fen was already set to fenAfterPotentialAmbush.
+            // fenHistory push is moved later to capture final FEN after all effects
 
             // ---- Restless King Advantage Trigger Logic ----
             if (moveResult.piece === 'k' && senderColor && opponentColor && room.fen && room.restlessKingCheckBlock && room.restlessKingUsesLeft) {
@@ -1419,6 +1536,10 @@ export function setupSocketHandlers(io: Server) {
 
                   if (forceSummonResult.success && forceSummonResult.newFen) {
                     room.fen = forceSummonResult.newFen; // IMPORTANT: Update room.fen and serverGame
+                    if (room.fen && room.fenHistory && room.fenHistory[room.fenHistory.length -1] !== room.fen) {
+                       room.fenHistory.push(room.fen);
+                       console.log(`[Forced Summon Check] Added forced summon FEN to history: ${room.fen}`);
+                    }
                     if (nextPlayerFullColor === 'white') {
                       room.whiteNoShowBishopUsed = true;
                     } else {
@@ -1474,8 +1595,13 @@ export function setupSocketHandlers(io: Server) {
                     qcStateForBroadcast = room.blackQueenlyCompensationState;
                 }
 
-                if (qcStateForBroadcast?.hasUsed) { 
+                if (qcStateForBroadcast?.hasUsed) {
                     console.log(`[QueenlyCompensation Trigger] Adding QC effects to broadcast. FEN: ${room.fen}`);
+                    // If QC changed the FEN, ensure history has the latest FEN from QC
+                    if (room.fen && room.fenHistory && room.fenHistory[room.fenHistory.length -1] !== room.fen) {
+                        room.fenHistory.push(room.fen);
+                        console.log(`[QueenlyCompensation Trigger] Added QC FEN to history: ${room.fen}`);
+                    }
                     moveDataForBroadcast.specialServerEffect = 'queenly_compensation_triggered';
                     moveDataForBroadcast.updatedAdvantageStates = {
                         ...moveDataForBroadcast.updatedAdvantageStates,
@@ -1614,6 +1740,22 @@ export function setupSocketHandlers(io: Server) {
                 }
             }
             // ----- END CLOAK ADVANTAGE LOGIC -----
+
+            // Push the final FEN to history before broadcasting the move
+            if (room.fen && room.fenHistory) {
+              if (room.fenHistory.length === 0 || room.fenHistory[room.fenHistory.length - 1] !== room.fen) {
+                room.fenHistory.push(room.fen);
+
+                // --- Piece Tracking History ---
+                if (!room.pieceTrackingHistory) room.pieceTrackingHistory = [];
+                // Deep copy to avoid mutation issues
+                const deepCopy = JSON.parse(JSON.stringify(room.pieceTracking));
+                room.pieceTrackingHistory.push(deepCopy);
+                // --- End Piece Tracking History ---
+
+                console.log(`[SocketHandlers sendMove] fenHistory updated (final pre-emit). New length: ${room.fenHistory.length}. Last FEN: ${room.fen}`);
+              }
+            }
 
             // Construct full advantage states for emission. This must be done before emitting "receiveMove".
             const whiteCurrentAdvantageStates: PlayerAdvantageStates = {
@@ -1810,7 +1952,8 @@ export function setupSocketHandlers(io: Server) {
       // More robust: check serverGame.history({verbose:true}) for moves by this player.
       // Or, ensure this event can only be processed if no 'sendMove' has been successfully processed for this player.
       // Current implementation of client sends this before any move, so history length 0 is a good start.
-      if (serverGame.history().length > 0) {
+      // Check fenHistory length instead of serverGame.history().length
+      if (room.fenHistory && room.fenHistory.length > 1) { // > 1 because initial FEN is added
           // A more specific check could be added here to see if THIS player has moved.
           // For now, any move on the board prevents the swap.
           socket.emit("openingSwapFailed", { message: "Opening Swap can only be used before the first move of the game." });
@@ -1853,6 +1996,14 @@ export function setupSocketHandlers(io: Server) {
       serverGame.put(pieceTo, from as any);
 
       room.fen = serverGame.fen(); // Update room FEN
+      // Update fenHistory with the new FEN after swap
+      if (room.fen && room.fenHistory) {
+        if (room.fenHistory.length > 0) {
+            room.fenHistory[room.fenHistory.length - 1] = room.fen; // Replace the last FEN (initial)
+        } else {
+            room.fenHistory.push(room.fen); // Or push if it was somehow empty
+        }
+      }
 
       if (playerColor === 'white' && room.whiteOpeningSwapState) {
         room.whiteOpeningSwapState.hasSwapped = true;
@@ -2000,6 +2151,10 @@ export function setupSocketHandlers(io: Server) {
         } else {
           room.blackNoShowBishopUsed = true;
         }
+        if (room.fen && room.fenHistory && room.fenHistory[room.fenHistory.length -1] !== room.fen) {
+            room.fenHistory.push(room.fen);
+            console.log(`[No-Show Bishop Summon] Added summoned bishop FEN to history: ${room.fen}`);
+        }
         console.log(`[No-Show Bishop Summon] Success for ${senderColor}. New FEN: ${room.fen}. Emitting 'bishopSummoned'.`);
         
         // Construct the full advantage states to send with the event
@@ -2060,6 +2215,10 @@ export function setupSocketHandlers(io: Server) {
 
       if (placementResult.success && placementResult.newFen) {
         room.fen = placementResult.newFen; // Update the authoritative FEN
+        if (room.fen && room.fenHistory && room.fenHistory[room.fenHistory.length -1] !== room.fen) {
+            room.fenHistory.push(room.fen);
+            console.log(`[Sacrificial Blessing] Added SB FEN to history: ${room.fen}`);
+        }
 
         // Mark advantage as used
         if (pendingColor === 'white') {
@@ -2197,5 +2356,128 @@ export function setupSocketHandlers(io: Server) {
       });
     });
 
-  }); // <-- closes io.on("connection", ...)
-} // <-- closes setupSocketHandlers
+    socket.on("recall_piece", async ({ roomId, pieceSquare, targetSquare }: { roomId: string; pieceSquare: Square; targetSquare: Square }) => {
+      try {
+        const room = rooms[roomId];
+        if (!room || !room.fen || !room.white || !room.black || !room.fenHistory) {
+          socket.emit("recallFailed", { message: "Room or game state not found." });
+          console.error(`[recall_piece] Room ${roomId} or critical room state not found.`);
+          return;
+        }
+
+        const playerSocketId = socket.id;
+        let playerColor: 'white' | 'black' | null = null;
+        let playerRecallState: RecallState | undefined;
+        let opponentColor: 'white' | 'black' | null = null; // Not strictly needed here but good for context
+
+        if (playerSocketId === room.white) {
+          playerColor = 'white';
+          playerRecallState = room.whiteRecallState;
+          opponentColor = 'black';
+        } else if (playerSocketId === room.black) {
+          playerColor = 'black';
+          playerRecallState = room.blackRecallState;
+          opponentColor = 'white';
+        } else {
+          socket.emit("recallFailed", { message: "Player not part of this game." });
+          console.error(`[recall_piece] Socket ${playerSocketId} not a player in room ${roomId}.`);
+          return;
+        }
+
+        if (!playerRecallState) {
+          socket.emit("recallFailed", { message: "Recall state not found for player." });
+          console.error(`[recall_piece] RecallState not found for ${playerColor} in room ${roomId}.`);
+          return;
+        }
+        
+        const serverGameForTurnCheck = new Chess(room.fen);
+        if (serverGameForTurnCheck.turn() !== playerColor[0]) {
+            socket.emit("recallFailed", { message: "Not your turn to use Recall." });
+            console.warn(`[recall_piece] ${playerColor} tried to Recall out of turn in room ${roomId}.`);
+            return;
+        }
+
+        const validationResult = validateRecallServerWithUID({
+          game: new Chess(room.fen),
+          pieceTracking: room.pieceTracking!,
+          pieceTrackingHistory: room.pieceTrackingHistory!,
+          pieceSquare,
+          playerColor: playerColor[0] as 'w' | 'b',
+          recallState: playerRecallState,
+        });
+
+        if (validationResult.isValid && validationResult.nextFen) {
+          room.fen = validationResult.nextFen;
+          playerRecallState.used = true; 
+
+          if (playerColor === 'white') {
+            room.whiteRecallState = playerRecallState;
+          } else {
+            room.blackRecallState = playerRecallState;
+          }
+          
+          if (room.fenHistory[room.fenHistory.length - 1] !== room.fen) {
+            room.fenHistory.push(room.fen);
+             console.log(`[SocketHandlers recall_piece] fenHistory updated after recall. New length: ${room.fenHistory.length}. Last FEN: ${room.fen}`);
+          }
+
+          const recallMoveData: ServerMovePayload = {
+            from: pieceSquare, 
+            to: targetSquare,   
+            special: 'recall_teleport', 
+            color: playerColor, 
+            afterFen: room.fen,
+            updatedAdvantageStates: { 
+              ...(playerColor === 'white' && { recall: room.whiteRecallState }),
+              ...(playerColor === 'black' && { recall: room.blackRecallState }),
+            }
+          };
+          
+          // Populate full advantage states for broadcast
+          const whitePlayerAdvantageStatesFull: PlayerAdvantageStates = {
+            ...(room.whiteAdvantage?.id === 'royal_escort' && { royalEscort: room.whiteRoyalEscortState }),
+            ...(room.whiteAdvantage?.id === 'lightning_capture' && { lightningCapture: room.whiteLightningCaptureState }),
+            ...(room.whiteAdvantage?.id === 'opening_swap' && { openingSwap: room.whiteOpeningSwapState }),
+            ...(room.whiteAdvantage?.id === 'pawn_ambush' && { pawnAmbush: room.whitePawnAmbushState }),
+            ...(room.whiteAdvantage?.id === 'queens_domain' && { queens_domain: room.whiteQueensDomainState }),
+            ...(room.whiteAdvantage?.id === 'knightmare' && { knightmare: room.whiteKnightmareState }),
+            ...(room.whiteAdvantage?.id === 'queenly_compensation' && { queenly_compensation: room.whiteQueenlyCompensationState }),
+            ...(room.whiteAdvantage?.id === 'coordinated_push' && { coordinatedPush: room.whiteCoordinatedPushState }),
+            ...(room.whiteCloakState && { cloak: room.whiteCloakState }),
+            ...(room.whiteAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.whiteNoShowBishopUsed, noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece }),
+            ...(room.whiteRecallState && { recall: room.whiteRecallState }), // Include recall state
+          };
+          const blackPlayerAdvantageStatesFull: PlayerAdvantageStates = {
+            ...(room.blackAdvantage?.id === 'royal_escort' && { royalEscort: room.blackRoyalEscortState }),
+            ...(room.blackAdvantage?.id === 'lightning_capture' && { lightningCapture: room.blackLightningCaptureState }),
+            ...(room.blackAdvantage?.id === 'opening_swap' && { openingSwap: room.blackOpeningSwapState }),
+            ...(room.blackAdvantage?.id === 'pawn_ambush' && { pawnAmbush: room.blackPawnAmbushState }),
+            ...(room.blackAdvantage?.id === 'queens_domain' && { queens_domain: room.blackQueensDomainState }),
+            ...(room.blackAdvantage?.id === 'knightmare' && { knightmare: room.blackKnightmareState }),
+            ...(room.blackAdvantage?.id === 'queenly_compensation' && { queenly_compensation: room.blackQueenlyCompensationState }),
+            ...(room.blackAdvantage?.id === 'coordinated_push' && { coordinatedPush: room.blackCoordinatedPushState }),
+            ...(room.blackCloakState && { cloak: room.blackCloakState }),
+            ...(room.blackAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.blackNoShowBishopUsed, noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece }),
+            ...(room.blackRecallState && { recall: room.blackRecallState }), // Include recall state
+          };
+
+          io.to(roomId).emit("receiveMove", { 
+            move: recallMoveData,
+            whitePlayerAdvantageStatesFull,
+            blackPlayerAdvantageStatesFull,
+          });
+
+          console.log(`[recall_piece] ${playerColor} successfully recalled piece from ${pieceSquare} to ${targetSquare} in room ${roomId}. New FEN: ${room.fen}`);
+
+        } else {
+          socket.emit("recallFailed", { message: validationResult.error || "Recall validation failed on server." });
+          console.warn(`[recall_piece] Recall failed for ${playerColor} in room ${roomId}: ${validationResult.error}`);
+        }
+      } catch (error) {
+        console.error(`[recall_piece] Error during recall for room ${roomId}:`, error);
+        socket.emit("recallFailed", { message: "An unexpected error occurred during recall." });
+      }
+    });
+
+  });
+}

@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams } from "react-router-dom";
-import { Chess, PieceSymbol, Move, Square } from "chess.js";
+import { Chess, PieceSymbol, Move, Square, Color } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { socket } from "../socket";
-import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState, SummonNoShowBishopPayload, PlayerAdvantageStates as FullPlayerAdvantageStates } from "../../shared/types";
+import { Advantage, ShieldedPieceInfo, ServerMovePayload, OpeningSwapState, SummonNoShowBishopPayload, PlayerAdvantageStates as FullPlayerAdvantageStates, RecallState } from "../../shared/types";
 import { useSacrificialBlessingStore, SacrificialBlessingPiece } from "../logic/advantages/sacrificialBlessing";
 import { isAttemptToCaptureShieldedPieceClient } from "../logic/advantages/silentShield";
+import { handleRecallClient } from "../logic/advantages/recall"; 
 import { isSummonAvailable } from "../logic/advantages/noShowBishop";
 import { isVoidStepAvailable, canPieceUseVoidStep, getValidVoidStepMoves } from '../logic/advantages/voidStep';
 // Square is already imported from chess.js
@@ -88,6 +89,9 @@ export default function ChessGame() {
   const [myAdvantage, setMyAdvantage] = useState<Advantage | null>(null);
   const [myShieldedPieceInfo, setMyShieldedPieceInfo] =
     useState<ShieldedPieceInfo | null>(null); // Added
+  const [myRecallState, setMyRecallState] = useState<RecallState | null>(null);
+  const [fenHistory, setFenHistory] = useState<string[]>([]);
+  const [isRecallActive, setIsRecallActive] = useState<boolean>(false);
   const fenSnapshotBeforeMove = useRef<string>(game.fen()); // For reverting deflected moves
   const [revealedAdvantages, setRevealedAdvantages] = useState<{
     whiteAdvantage?: Advantage;
@@ -269,6 +273,12 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     if (isSummonModeActive) setIsSummonModeActive(false);
   }
 
+  // Recall advantage reset
+  if (myAdvantage?.id !== 'recall') {
+    setIsRecallActive(false); // Reset active state if advantage changes away from recall
+    // myRecallState will be set to null by advantageAssigned or receiveMove if needed
+  }
+
   }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // myCloakDetails is intentionally not in dependency array to avoid loops with its own setter
 
   useEffect(() => {
@@ -358,6 +368,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       try {
         game.load(data.fen);
         setFen(game.fen());
+        setFenHistory([data.fen]); // Initialize with the starting FEN
         fenSnapshotBeforeMove.current = game.fen(); 
       } catch (e) {
         console.error("[ChessGame event gameStart] Error loading FEN from gameStart event:", e, "FEN was:", data.fen);
@@ -418,6 +429,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           setMyOpeningSwapState(myCurrentFullStates.openingSwap || null);
           setQueenlyCompensationState(myCurrentFullStates.queenly_compensation || null);
           setCoordinatedPushState(myCurrentFullStates.coordinatedPush || null);
+          setMyRecallState(myCurrentFullStates.recall || null); // Update Recall state
           
           // Update No-Show Bishop state from full states
           if (myAdvantage?.id === 'no_show_bishop' && myCurrentFullStates?.noShowBishopUsed !== undefined) {
@@ -491,6 +503,13 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         }
 
         if (boardUpdatedByEcho) {
+            setFenHistory(prevHistory => {
+                if (prevHistory.length > 0 && prevHistory[prevHistory.length - 1] === game.fen()) {
+                    return prevHistory;
+                }
+                const newHist = [...prevHistory, game.fen()];
+                return newHist; 
+            });
             if (game.isCheckmate()) {
                 const winnerTurn = game.turn(); 
                 const winner = winnerTurn === 'w' ? 'black' : 'white';
@@ -642,6 +661,13 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                   setMyShieldedPieceInfo(updatedShieldedPieceFromServer);
                 }
             }
+            setFenHistory(prevHistory => {
+                if (prevHistory.length > 0 && prevHistory[prevHistory.length - 1] === game.fen()) {
+                    return prevHistory;
+                }
+                const newHist = [...prevHistory, game.fen()];
+                return newHist;
+            });
             if (game.isCheckmate()) {
                 const winnerTurn = game.turn(); 
                 const winner = winnerTurn === 'w' ? 'black' : 'white'; 
@@ -815,7 +841,11 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       }
 
       // Handle No-Show Bishop advantage assignment
-      if (data.advantage.id === 'no_show_bishop') {
+      if (data.advantage.id === 'recall') {
+        const initialRecallState = data.advantageDetails?.recallState || { used: false };
+        setMyRecallState(initialRecallState);
+        console.log("[Recall Client] Recall advantage assigned, state initialized:", initialRecallState);
+      } else if (data.advantage.id === 'no_show_bishop') {
         const used = data.advantageDetails?.noShowBishopUsed || false;
         const details = data.advantageDetails?.removedBishopDetails;
         console.log(`[No-Show Bishop Client] advantageAssigned: used=${used}, removedPiece=`, details);
@@ -881,6 +911,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       console.log(`[ChessGame event] openingSwapSuccess: FEN updated to ${newFen}, ${from} swapped with ${to} by ${swapPlayerColor}`);
       game.load(newFen);
       setFen(newFen);
+      setFenHistory(prev => [...prev, newFen]);
 
       if (swapPlayerColor === color && myAdvantage?.id === "opening_swap") {
         setShowOpeningSwapPrompt(false);
@@ -916,6 +947,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       console.log(`[ChessGame] boardUpdateFromBlessing received. New FEN: ${newFen}, Used by: ${playerWhoUsedBlessing}`);
       game.load(newFen);
       setFen(newFen);
+      setFenHistory(prev => [...prev, newFen]);
       resetSacrificialBlessingState();
       if (playerWhoUsedBlessing === color) {
         setHasUsedMySacrificialBlessing(true);
@@ -993,6 +1025,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       console.log("[No-Show Bishop Client] Loading new FEN after summon:", data.newFen);
       game.load(data.newFen);
       setFen(game.fen());
+      setFenHistory(prev => [...prev, data.newFen]);
       fenSnapshotBeforeMove.current = game.fen(); // Update snapshot
 
       alert(`Player ${data.playerColor} summoned their ${data.pieceType.toUpperCase()} to ${data.summonedSquare}.`);
@@ -1133,6 +1166,47 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
   // Add debug logs in onSquareClick
   const onSquareClick = (squareClicked: Square) => {
+    if (isRecallActive && myAdvantage?.id === 'recall' && color && !myRecallState?.used) {
+      const piece = game.get(squareClicked);
+      if (!piece || piece.color !== color[0]) {
+        alert("Recall Error: Please select one of your own pieces.");
+        return;
+      }
+
+      let historyForClientValidation = [...fenHistory];
+      if (historyForClientValidation.length > 0 && historyForClientValidation[historyForClientValidation.length - 1] === game.fen()) {
+        historyForClientValidation = historyForClientValidation.slice(0, historyForClientValidation.length - 1);
+      }
+
+      if (historyForClientValidation.length < 6) {
+        alert("Recall Error: Not enough game history for client validation (needs at least 6 prior states). Current relevant history length: " + historyForClientValidation.length);
+        setIsRecallActive(false);
+        return;
+      }
+      
+      console.log(`[Recall UI] Calling handleRecallClient. Piece on: ${squareClicked}, Player: ${color}, History for client (len ${historyForClientValidation.length}):`, historyForClientValidation.slice(-7));
+      
+      const recallResult = handleRecallClient({
+        game: new Chess(game.fen()),
+        fenHistory: historyForClientValidation,
+        pieceSquare: squareClicked,
+        playerColor: color[0] as 'w' | 'b',
+      });
+
+      if (recallResult.outcome === "success") {
+        console.log(`[Recall UI] Client validation success for ${squareClicked}. Emitting recall_piece.`);
+        socket.emit("recall_piece", {
+          roomId,
+          pieceSquare: squareClicked,
+        });
+        // UI will update upon receiving new FEN from server via receiveMove
+        alert(`Recall initiated for piece on ${squareClicked}. Waiting for server confirmation...`);
+      } else {
+        alert(`Recall Failed (Client Validation): ${recallResult.reason || "Unknown error"}`);
+      }
+      setIsRecallActive(false); // Deactivate after attempt, success or fail
+      return; // Important: consume the click
+    }
     console.log("[Void Step UI Debug] Square clicked:", {
       square: squareClicked,
       isVoidStepToggleActive,
@@ -2620,6 +2694,34 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             >
               Activate Void Step
             </button>
+          )}
+          {/* Recall Button */}
+          {myAdvantage?.id === 'recall' && color && game.turn() === color[0] && !myRecallState?.used && (
+            <button
+              onClick={() => {
+                if (isRecallActive) {
+                  setIsRecallActive(false);
+                  alert("Recall action cancelled.");
+                } else {
+                  let historyForCheck = [...fenHistory];
+                  if (historyForCheck.length > 0 && historyForCheck[historyForCheck.length -1] === game.fen()){
+                      historyForCheck = historyForCheck.slice(0, -1); 
+                  }
+                  if (historyForCheck.length < 6) {
+                    alert("Recall Error: Not enough game history recorded on client (less than 3 full turns of previous states). Current history length for check: " + historyForCheck.length);
+                    return;
+                  }
+                  setIsRecallActive(true);
+                  alert("Recall Activated: Click one of your pieces to teleport it to its position 3 turns ago.");
+                }
+              }}
+              style={{ backgroundColor: isRecallActive ? 'lightblue' : undefined, margin: '5px', padding: '8px 12px' }}
+            >
+              {isRecallActive ? 'Cancel Recall Action' : `Use Recall (${myAdvantage.rarity})`}
+            </button>
+          )}
+          {myAdvantage?.id === 'recall' && myRecallState?.used && (
+            <p style={{ margin: '5px', fontStyle: 'italic' }}>Recall has been used.</p>
           )}
         </div>
       )}

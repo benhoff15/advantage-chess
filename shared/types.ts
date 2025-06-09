@@ -63,12 +63,17 @@ export interface PlayerAdvantageStates {
   };
   // Add other advantage states here as needed
   cloak?: CloakState; // Add this line
+  recall?: RecallState;
   noShowBishopUsed?: boolean;
   noShowBishopRemovedPiece?: { square: string, type: string };
   voidStep?: {
     isActive: boolean;
     hasUsed: boolean;
   };
+}
+
+export interface RecallState {
+  used: boolean;
 }
 
 export interface SacrificialBlessingPendingState {
