@@ -30,6 +30,7 @@ import { validateCoordinatedPushServerMove } from './logic/advantages/coordinate
 import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
 import { validateVoidStepServerMove } from './logic/advantages/voidStep';
+import { handleQuantumLeap } from './logic/advantages/quantumLeap'; // Added for Quantum Leap
 
 console.log("setupSocketHandlers loaded");
 
@@ -123,7 +124,9 @@ export type RoomState = {
   blackRecallState?: RecallState;
   pieceTracking?: Record<string, PieceTrackingInfo>;
   pieceTrackingHistory?: Record<string, PieceTrackingInfo>[];
-
+  // PlayerAdvantageStates for each player
+  whitePlayerAdvantageStates?: PlayerAdvantageStates;
+  blackPlayerAdvantageStates?: PlayerAdvantageStates;
 };
 
 const rooms: Record<string, RoomState> = {};
@@ -221,10 +224,61 @@ export function setupSocketHandlers(io: Server) {
           fenHistory: [],
           whiteRecallState: { used: false },
           blackRecallState: { used: false },
+          // Initialize PlayerAdvantageStates for Quantum Leap and others
+          whitePlayerAdvantageStates: {
+            royalEscort: undefined, // Keep existing individual states for now, or migrate them here
+            lightningCapture: { used: false },
+            openingSwap: { hasSwapped: false },
+            pawnAmbush: undefined,
+            coordinatedPush: { active: false, usedThisTurn: false },
+            hasUsedSacrificialBlessing: false,
+            queens_domain: { isActive: false, hasUsed: false },
+            knightmare: { hasUsed: false },
+            queenly_compensation: { hasUsed: false },
+            arcane_reinforcement: { spawnedSquare: undefined },
+            cloak: undefined,
+            recall: { used: false },
+            noShowBishopUsed: false,
+            noShowBishopRemovedPiece: undefined,
+            voidStep: { isActive: false, hasUsed: false },
+            quantumLeapUsed: false, // Initialize Quantum Leap
+          },
+          blackPlayerAdvantageStates: {
+            royalEscort: undefined,
+            lightningCapture: { used: false },
+            openingSwap: { hasSwapped: false },
+            pawnAmbush: undefined,
+            coordinatedPush: { active: false, usedThisTurn: false },
+            hasUsedSacrificialBlessing: false,
+            queens_domain: { isActive: false, hasUsed: false },
+            knightmare: { hasUsed: false },
+            queenly_compensation: { hasUsed: false },
+            arcane_reinforcement: { spawnedSquare: undefined },
+            cloak: undefined,
+            recall: { used: false },
+            noShowBishopUsed: false,
+            noShowBishopRemovedPiece: undefined,
+            voidStep: { isActive: false, hasUsed: false },
+            quantumLeapUsed: false, // Initialize Quantum Leap
+          },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
-        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including Knightmare, Queenly Compensation ({hasUsed: false}), Arcane Reinforcement (null), Coordinated Push ({ active: false, usedThisTurn: false }), Cloak (undefined), No-Show Bishop (false, undefined), fenHistory ([]), and Recall ({used: false}).`);
+        console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including PlayerAdvantageStates structure.`);
       } else {
+        // If room exists, ensure PlayerAdvantageStates and quantumLeapUsed are initialized
+        if (!room.whitePlayerAdvantageStates) {
+          room.whitePlayerAdvantageStates = { quantumLeapUsed: false };
+        } else if (room.whitePlayerAdvantageStates.quantumLeapUsed === undefined) {
+          room.whitePlayerAdvantageStates.quantumLeapUsed = false;
+        }
+        if (!room.blackPlayerAdvantageStates) {
+          room.blackPlayerAdvantageStates = { quantumLeapUsed: false };
+        } else if (room.blackPlayerAdvantageStates.quantumLeapUsed === undefined) {
+          room.blackPlayerAdvantageStates.quantumLeapUsed = false;
+        }
+        // Ensure other potentially missing states in PlayerAdvantageStates are also initialized if necessary
+        // This part needs to be comprehensive based on all advantages. For now, focusing on quantumLeapUsed.
+
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
         if (!room.whiteLightningCaptureState) room.whiteLightningCaptureState = { used: false };
@@ -268,6 +322,17 @@ export function setupSocketHandlers(io: Server) {
         if (room.fenHistory === undefined) room.fenHistory = [];
         if (room.whiteRecallState === undefined) room.whiteRecallState = { used: false };
         if (room.blackRecallState === undefined) room.blackRecallState = { used: false };
+        // Initialize PlayerAdvantageStates if they are missing in an existing room
+        if (!room.whitePlayerAdvantageStates) {
+            room.whitePlayerAdvantageStates = { quantumLeapUsed: false }; // Initialize with quantumLeapUsed
+        } else if (room.whitePlayerAdvantageStates.quantumLeapUsed === undefined) {
+            room.whitePlayerAdvantageStates.quantumLeapUsed = false; // Add if object exists but property is missing
+        }
+        if (!room.blackPlayerAdvantageStates) {
+            room.blackPlayerAdvantageStates = { quantumLeapUsed: false }; // Initialize with quantumLeapUsed
+        } else if (room.blackPlayerAdvantageStates.quantumLeapUsed === undefined) {
+            room.blackPlayerAdvantageStates.quantumLeapUsed = false; // Add if object exists but property is missing
+        }
       }
       
       // Now 'room' variable is guaranteed to be the correct RoomState object or undefined if something went wrong before this point.
@@ -488,6 +553,11 @@ export function setupSocketHandlers(io: Server) {
                     }
                     console.log(`White player (${room.white}) assigned No-Show Bishop. Used: ${whiteAdvantageDetails.noShowBishopUsed}, Removed: ${JSON.stringify(whiteAdvantageDetails.removedBishopDetails)}`);
                 }
+                if (room.whiteAdvantage.id === "quantum_leap" && room.whitePlayerAdvantageStates) {
+                    // Add quantumLeapUsed to advantageDetails for quantum_leap
+                    (whiteAdvantageDetails as any).quantumLeapUsed = room.whitePlayerAdvantageStates.quantumLeapUsed;
+                     console.log(`White player (${room.white}) assigned Quantum Leap. Initial state: quantumLeapUsed: ${room.whitePlayerAdvantageStates.quantumLeapUsed}`);
+                }
 
                 whitePlayerSocket.emit("advantageAssigned", {
                     advantage: room.whiteAdvantage,
@@ -559,6 +629,11 @@ export function setupSocketHandlers(io: Server) {
                     console.warn(`[SocketHandlers] blackNoShowBishopRemovedPiece is undefined for black player (No-Show Bishop) in room ${roomId}.`);
                 }
                 console.log(`Black player (${socket.id}) assigned No-Show Bishop. Used: ${blackAdvantageDetails.noShowBishopUsed}, Removed: ${JSON.stringify(blackAdvantageDetails.removedBishopDetails)}`);
+            }
+            if (room.blackAdvantage.id === "quantum_leap" && room.blackPlayerAdvantageStates) {
+                // Add quantumLeapUsed to advantageDetails for quantum_leap
+                (blackAdvantageDetails as any).quantumLeapUsed = room.blackPlayerAdvantageStates.quantumLeapUsed;
+                console.log(`Black player (${socket.id}) assigned Quantum Leap. Initial state: quantumLeapUsed: ${room.blackPlayerAdvantageStates.quantumLeapUsed}`);
             }
             
             socket.emit("advantageAssigned", {
@@ -1787,6 +1862,7 @@ export function setupSocketHandlers(io: Server) {
                     noShowBishopUsed: room.blackNoShowBishopUsed,
                     noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece
                 }),
+                ...(room.blackPlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.blackPlayerAdvantageStates.quantumLeapUsed }),
             };
 
             const finalPayloadForReceiveMove = {
@@ -1795,10 +1871,12 @@ export function setupSocketHandlers(io: Server) {
                 whitePlayerAdvantageStatesFull: {
                     ...whiteCurrentAdvantageStates,
                     cloak: room.whiteCloakState || null, // Always include cloak, even if null
+                    quantumLeapUsed: room.whitePlayerAdvantageStates?.quantumLeapUsed, // Add quantumLeapUsed
                 },
                 blackPlayerAdvantageStatesFull: {
                     ...blackCurrentAdvantageStates,
                     cloak: room.blackCloakState || null, // Always include cloak, even if null
+                    quantumLeapUsed: room.blackPlayerAdvantageStates?.quantumLeapUsed, // Add quantumLeapUsed
                 },
             };
             console.log(`[Cloak Server socketHandlers - sendMove] Emitting finalPayloadForReceiveMove. WhiteFullStates: ${JSON.stringify(finalPayloadForReceiveMove.whitePlayerAdvantageStatesFull)}, BlackFullStates: ${JSON.stringify(finalPayloadForReceiveMove.blackPlayerAdvantageStatesFull)}`);
@@ -2446,6 +2524,7 @@ export function setupSocketHandlers(io: Server) {
             ...(room.whiteCloakState && { cloak: room.whiteCloakState }),
             ...(room.whiteAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.whiteNoShowBishopUsed, noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece }),
             ...(room.whiteRecallState && { recall: room.whiteRecallState }), // Include recall state
+            ...(room.whitePlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.whitePlayerAdvantageStates.quantumLeapUsed }),
           };
           const blackPlayerAdvantageStatesFull: PlayerAdvantageStates = {
             ...(room.blackAdvantage?.id === 'royal_escort' && { royalEscort: room.blackRoyalEscortState }),
@@ -2459,6 +2538,7 @@ export function setupSocketHandlers(io: Server) {
             ...(room.blackCloakState && { cloak: room.blackCloakState }),
             ...(room.blackAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.blackNoShowBishopUsed, noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece }),
             ...(room.blackRecallState && { recall: room.blackRecallState }), // Include recall state
+            ...(room.blackPlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.blackPlayerAdvantageStates.quantumLeapUsed }),
           };
 
           io.to(roomId).emit("receiveMove", { 
@@ -2476,6 +2556,89 @@ export function setupSocketHandlers(io: Server) {
       } catch (error) {
         console.error(`[recall_piece] Error during recall for room ${roomId}:`, error);
         socket.emit("recallFailed", { message: "An unexpected error occurred during recall." });
+      }
+    });
+
+    socket.on("quantum_leap_swap", ({ roomId, from, to }: { roomId: string; from: Square; to: Square }) => {
+      const room = rooms[roomId];
+      if (!room || !room.fen || !room.white || !room.black) {
+        socket.emit("quantumLeapError", { message: "Room not found or game not ready." });
+        return;
+      }
+
+      const playerSocketId = socket.id;
+      let playerColor: 'w' | 'b' | null = null;
+      let playerAdvantageStates: PlayerAdvantageStates | undefined;
+
+      if (playerSocketId === room.white) {
+        playerColor = 'w';
+        playerAdvantageStates = room.whitePlayerAdvantageStates; 
+      } else if (playerSocketId === room.black) {
+        playerColor = 'b';
+        playerAdvantageStates = room.blackPlayerAdvantageStates;
+      } else {
+        socket.emit("quantumLeapError", { message: "You are not a player in this room." });
+        return;
+      }
+
+      if (!playerColor || !playerAdvantageStates) {
+        // This check might be redundant if initialization is guaranteed, but good for safety
+        if (playerColor && !playerAdvantageStates) { // If color is known but states are missing, try to initialize
+            if (playerColor === 'w') {
+                room.whitePlayerAdvantageStates = { quantumLeapUsed: false }; // Default init
+                playerAdvantageStates = room.whitePlayerAdvantageStates;
+            } else {
+                room.blackPlayerAdvantageStates = { quantumLeapUsed: false }; // Default init
+                playerAdvantageStates = room.blackPlayerAdvantageStates;
+            }
+            console.warn(`[quantum_leap_swap] PlayerAdvantageStates for ${playerColor} was undefined, initialized.`);
+        } else {
+            socket.emit("quantumLeapError", { message: "Player color or advantage states not determinable." });
+            return;
+        }
+      }
+      
+      const playerAdvantage = playerColor === 'w' ? room.whiteAdvantage : room.blackAdvantage;
+      if (playerAdvantage?.id !== 'quantum_leap') {
+        socket.emit("quantumLeapError", { message: "Quantum Leap advantage not active for this player." });
+        return;
+      }
+
+      const serverGame = new Chess(room.fen);
+
+      const result = handleQuantumLeap({
+        game: serverGame,
+        playerColor,
+        from,
+        to,
+        playerAdvantageStates, // Pass the whole PlayerAdvantageStates object
+      });
+
+      if (result.success && result.newFen) {
+        room.fen = result.newFen; 
+
+        if (playerColor === 'w') {
+          if (room.whitePlayerAdvantageStates) room.whitePlayerAdvantageStates.quantumLeapUsed = true;
+          else room.whitePlayerAdvantageStates = { quantumLeapUsed: true }; 
+        } else {
+          if (room.blackPlayerAdvantageStates) room.blackPlayerAdvantageStates.quantumLeapUsed = true;
+          else room.blackPlayerAdvantageStates = { quantumLeapUsed: true };
+        }
+        
+        console.log(`[SocketHandlers quantum_leap_swap] Player ${playerColor} successfully used Quantum Leap. Room: ${roomId}. New FEN: ${room.fen}`);
+
+        io.to(roomId).emit("quantum_leap_swap_applied", {
+          from,
+          to,
+          fen: room.fen,
+          playerColor: playerColor, 
+          updatedAdvantageStatesForPlayer: { 
+            quantumLeapUsed: true 
+          }
+        });
+      } else {
+        console.error(`[SocketHandlers quantum_leap_swap] Failed for player ${playerColor}. Room: ${roomId}. Error: ${result.error}`);
+        socket.emit("quantumLeapError", { message: result.error || "Quantum Leap failed." });
       }
     });
 

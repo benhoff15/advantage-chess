@@ -55,6 +55,7 @@ import { CoordinatedPushState } from "../../shared/types";
 import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from "../logic/advantages/coordinatedPush";
 import { shouldHidePiece } from "../logic/advantages/cloak";
 import { PlayerAdvantageStates, CloakState } from "../../shared/types"; // This is the one used for opponentAdvantageStates etc.
+import { applyQuantumLeapClient, getQuantumLeapPayload } from "../logic/advantages/quantumLeap";
 // Square is already imported from chess.js
 
 // Define the type for the chess.js Move object if not already available globally
@@ -170,6 +171,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   const [whitePlayerAdvantageStates, setWhitePlayerAdvantageStates] = useState<PlayerAdvantageStates | null>(null);
   const [blackPlayerAdvantageStates, setBlackPlayerAdvantageStates] = useState<PlayerAdvantageStates | null>(null);
 
+  // Quantum Leap States
+  const [isQuantumLeapActive, setIsQuantumLeapActive] = useState<boolean>(false);
+  const [quantumLeapSelections, setQuantumLeapSelections] = useState<Square[]>([]);
+
   useEffect(() => {
     if (myAdvantage?.id !== 'sacrificial_blessing') {
       setHasUsedMySacrificialBlessing(false); // Reset usage if advantage changes
@@ -279,7 +284,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     // myRecallState will be set to null by advantageAssigned or receiveMove if needed
   }
 
-  }, [myAdvantage, arcaneReinforcementSpawnedSquare]); // myCloakDetails is intentionally not in dependency array to avoid loops with its own setter
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare, playerColor]);
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -449,6 +454,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           // Note: PawnAmbushState is not explicitly managed with useState yet, but could be added if needed locally.
           // ArcaneReinforcement (spawnedSquare) is handled in advantageAssigned.
           // SacrificialBlessing state (hasUsed) is managed by hasUsedMySacrificialBlessing.
+
+          // Update full PlayerAdvantageStates for self based on color
+          if (color === 'white' && whiteFullStates) {
+            console.log("[ChessGame handleReceiveMove] Updating whitePlayerAdvantageStates with full server state:", whiteFullStates);
+            setWhitePlayerAdvantageStates(prev => ({...prev, ...whiteFullStates}));
+          } else if (color === 'black' && blackFullStates) {
+            console.log("[ChessGame handleReceiveMove] Updating blackPlayerAdvantageStates with full server state:", blackFullStates);
+            setBlackPlayerAdvantageStates(prev => ({...prev, ...blackFullStates}));
+          }
       }
       console.log(`[Cloak Client ChessGame - handleReceiveMove] Post-move states updated. Opponent Cloak: ${JSON.stringify(oppFullStates?.cloak)}. My Cloak: ${JSON.stringify(myCurrentFullStates?.cloak)}`);
 
@@ -869,6 +883,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
            console.warn("[No-Show Bishop Client ChessGame - handleAdvantageAssigned] No-Show Bishop active, but no removedBishopDetails provided by server.");
         }
       }
+      if (data.advantage.id === 'quantum_leap' && data.advantageDetails?.quantumLeapUsed !== undefined) {
+        const qlUsed = data.advantageDetails.quantumLeapUsed;
+        if (color === 'white') {
+          setWhitePlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: qlUsed }));
+        } else if (color === 'black') {
+          setBlackPlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: qlUsed }));
+        }
+        console.log(`[ChessGame handleAdvantageAssigned] Quantum Leap assigned. quantumLeapUsed set to: ${qlUsed}`);
+      }
     };
     socket.on("advantageAssigned", handleAdvantageAssigned);
 
@@ -1077,6 +1100,35 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     };
     socket.on("summonBishopFailed", handleSummonBishopFailed);
 
+    const handleQuantumLeapApplied = ({ from, to, fen: newFen, playerColor: eventPlayerColor, updatedAdvantageStatesForPlayer }: { from: Square, to: Square, fen: string, playerColor: 'w' | 'b', updatedAdvantageStatesForPlayer: { quantumLeapUsed: boolean } }) => {
+      console.log(`[ChessGame] quantum_leap_swap_applied received. From: ${from}, To: ${to}, FEN: ${newFen}, Player: ${eventPlayerColor}`);
+      const wasMySwap = eventPlayerColor === color?.[0];
+
+      applyQuantumLeapClient({ game, from, to, newFen, isMyMove: wasMySwap });
+      setFen(game.fen());
+      setFenHistory(prev => [...prev, game.fen()]);
+
+      if (wasMySwap) {
+        if (color === 'white') {
+          setWhitePlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: updatedAdvantageStatesForPlayer.quantumLeapUsed }));
+        } else if (color === 'black') {
+          setBlackPlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: updatedAdvantageStatesForPlayer.quantumLeapUsed }));
+        }
+        alert("Quantum Leap successful!");
+      } else {
+        // Opponent used Quantum Leap
+        if (eventPlayerColor === 'w') { // Opponent was white
+          setWhitePlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: updatedAdvantageStatesForPlayer.quantumLeapUsed }));
+        } else { // Opponent was black
+          setBlackPlayerAdvantageStates(prev => ({ ...prev, quantumLeapUsed: updatedAdvantageStatesForPlayer.quantumLeapUsed }));
+        }
+        alert(`Opponent used Quantum Leap, swapping pieces on ${from} and ${to}.`);
+      }
+      setIsQuantumLeapActive(false);
+      setQuantumLeapSelections([]);
+    };
+    socket.on("quantum_leap_swap_applied", handleQuantumLeapApplied);
+
 
     return () => {
       console.log(
@@ -1101,6 +1153,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       socket.off("restlessKingActivated", handleRestlessKingActivated); 
       socket.off("bishopSummoned", handleBishopSummoned);
       socket.off("summonBishopFailed", handleSummonBishopFailed);
+      socket.off("quantum_leap_swap_applied", handleQuantumLeapApplied);
     };
   }, [
     roomId,
@@ -1166,6 +1219,42 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
   // Add debug logs in onSquareClick
   const onSquareClick = (squareClicked: Square) => {
+    // Quantum Leap Selection Logic
+    if (isQuantumLeapActive && color && myAdvantage?.id === 'quantum_leap') {
+      const piece = game.get(squareClicked);
+      if (!piece || piece.color !== color[0]) {
+        alert("Quantum Leap: Please select one of your own pieces.");
+        // Clear selections on invalid click, or allow re-selection of first piece
+        // setQuantumLeapSelections([]); 
+        return;
+      }
+
+      if (quantumLeapSelections.includes(squareClicked)) {
+        // Deselect if clicked again
+        setQuantumLeapSelections(prev => prev.filter(sq => sq !== squareClicked));
+        return;
+      }
+
+      const newSelections = [...quantumLeapSelections, squareClicked];
+      setQuantumLeapSelections(newSelections);
+
+      if (newSelections.length === 2) {
+        if (!roomId) {
+          alert("Error: Room ID not found. Cannot perform Quantum Leap.");
+          setIsQuantumLeapActive(false);
+          setQuantumLeapSelections([]);
+          return;
+        }
+        // Ensure the game instance passed is the most current one if needed by handleQuantumLeapClient
+        // const currentSnapshotGame = new Chess(fen); 
+        const payload = getQuantumLeapPayload({ from: newSelections[0], to: newSelections[1] });
+        socket.emit("quantum_leap_swap", { roomId, ...payload });
+        setIsQuantumLeapActive(false);
+        setQuantumLeapSelections([]);
+      }
+      return; // Consume click for Quantum Leap
+    }
+
     if (isRecallActive && myAdvantage?.id === 'recall' && color && !myRecallState?.used) {
       const piece = game.get(squareClicked);
       if (!piece || piece.color !== color[0]) {
@@ -1552,6 +1641,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     if (isSacrificialBlessingActive) {
       alert("Sacrificial Blessing is active. Please click a piece then an empty square. Drag-and-drop is disabled for blessing.");
       return null; 
+    }
+    if (isQuantumLeapActive) { // Block standard moves if QL is active
+      alert("Quantum Leap is active. Select two of your pieces to swap or cancel.");
+      return null;
     }
     if (!color) return null;
     const myColor = color;
@@ -2230,7 +2323,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             from: standardMoveAttempt.from,
             to: standardMoveAttempt.to,
             color: myColor, 
-            promotion: standardMoveAttempt.promotion 
+            promotion: standardMoveAttempt.promotion,
           };
 
           if (standardMoveAttempt.piece === 'p' && !standardMoveAttempt.promotion && myAdvantage?.id === 'pawn_ambush' && myColor) {
@@ -2443,8 +2536,18 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       }
     }
 
+    // Quantum Leap Highlighting
+    if (isQuantumLeapActive) {
+      quantumLeapSelections.forEach(sq => {
+        styles[sq] = { ...styles[sq], background: "rgba(70, 130, 180, 0.6)" }; // Steel blue highlight
+      });
+      if (quantumLeapSelections.length === 1) { // If one piece is selected, highlight it more prominently
+        styles[quantumLeapSelections[0]] = { ...styles[quantumLeapSelections[0]], background: "rgba(70, 130, 180, 0.9)" };
+      }
+    }
+
     return styles;
-  }, [selectedSquare, validMoves, isVoidStepToggleActive, currentPlayerAdvantageStates, color, game.turn()]);
+  }, [selectedSquare, validMoves, isVoidStepToggleActive, currentPlayerAdvantageStates, color, game.turn(), isQuantumLeapActive, quantumLeapSelections, isSacrificialBlessingActive, availablePiecesForBlessing, selectedPieceForBlessing]);
 
   // Add handler for advantage state update
   const handleAdvantageStateUpdate = (data: any) => {
@@ -2585,7 +2688,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             </div>
           )}
           {myAdvantage.id === "royal_decree" && hasUsedRoyalDecree && (
-            <p style={{ marginTop: '10px' }}><em>Royal Decree has been used.</em></p>
+            <p style={{ marginTop: '10px', fontStyle: 'italic' }}><em>Royal Decree has been used.</em></p>
           )}
           {myAdvantage?.id === "queens_domain" && color && game.turn() === color[0] && !queensDomainState?.hasUsed && isQueenAlive(game, color) && (
             <button
@@ -2594,7 +2697,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                 setIsQueensDomainToggleActive(newToggleState); 
 
                 if (newToggleState) {
-                  alert("Queen's Domain activated! Your next queen move can pass through friendly pieces.");
+                  alert("Queen's Domain activated: Your next queen move can pass through friendly pieces.");
                 } else {
                   alert("Queen's Domain deactivated for the next move.");
                 }
@@ -2723,6 +2826,34 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           {myAdvantage?.id === 'recall' && myRecallState?.used && (
             <p style={{ margin: '5px', fontStyle: 'italic' }}>Recall has been used.</p>
           )}
+
+          {/* Quantum Leap Button */}
+          {myAdvantage?.id === 'quantum_leap' && color && game.turn() === color[0] &&
+           !((color === 'white' ? whitePlayerAdvantageStates?.quantumLeapUsed : blackPlayerAdvantageStates?.quantumLeapUsed)) && (
+            <button
+              onClick={() => {
+                if (isQuantumLeapActive) {
+                  setIsQuantumLeapActive(false);
+                  setQuantumLeapSelections([]);
+                } else {
+                  const currentQLUsed = color === 'white' ? whitePlayerAdvantageStates?.quantumLeapUsed : blackPlayerAdvantageStates?.quantumLeapUsed;
+                  if (currentQLUsed) {
+                    alert("Quantum Leap has already been used.");
+                    return;
+                  }
+                  setIsQuantumLeapActive(true);
+                  alert("Quantum Leap activated: Select two of your pieces to swap.");
+                }
+              }}
+              style={{ backgroundColor: isQuantumLeapActive ? 'lightblue' : undefined, margin: '5px', padding: '8px 12px' }}
+            >
+              {isQuantumLeapActive ? 'Cancel Quantum Leap' : 'Use Quantum Leap'}
+            </button>
+          )}
+          {myAdvantage?.id === 'quantum_leap' &&
+           ((color === 'white' ? whitePlayerAdvantageStates?.quantumLeapUsed : blackPlayerAdvantageStates?.quantumLeapUsed)) && (
+            <p style={{ margin: '5px', fontStyle: 'italic' }}>Quantum Leap has been used.</p>
+          )}
         </div>
       )}
 
@@ -2774,7 +2905,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                knightmarePossibleMoves.forEach(sq => {
                    styles[sq] = { 
                      ...styles[sq], 
-                  background: "rgba(240, 230, 140, 0.5)", 
+                     background: "rgba(240, 230, 140, 0.5)", 
                      cursor: "pointer", 
                    };
                });

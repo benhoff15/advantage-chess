@@ -70,6 +70,7 @@ export interface PlayerAdvantageStates {
     isActive: boolean;
     hasUsed: boolean;
   };
+  quantumLeapUsed?: boolean;
 }
 
 export interface RecallState {
