@@ -32,6 +32,7 @@ import { handlePawnAmbushServer } from './logic/advantages/pawnAmbush'; // Added
 import { canTriggerSacrificialBlessing, getPlaceableKnightsAndBishops, handleSacrificialBlessingPlacement } from './logic/advantages/sacrificialBlessing';
 import { validateVoidStepServerMove } from './logic/advantages/voidStep';
 import { handleQuantumLeap } from './logic/advantages/quantumLeap'; // Added for Quantum Leap
+import { handleSecretWeaponMoveServer } from './logic/advantages/secretWeapon';
 
 console.log("setupSocketHandlers loaded");
 
@@ -245,6 +246,7 @@ export function setupSocketHandlers(io: Server) {
             quantumLeapUsed: false, // Initialize Quantum Leap
             hiddenHeir: undefined,
             hiddenHeirCaptured: false,
+            secretWeaponPieceId: undefined, // Added for Secret Weapon
           },
           blackPlayerAdvantageStates: {
             royalEscort: undefined,
@@ -265,36 +267,48 @@ export function setupSocketHandlers(io: Server) {
             quantumLeapUsed: false, // Initialize Quantum Leap
             hiddenHeir: undefined,
             hiddenHeirCaptured: false,
+            secretWeaponPieceId: undefined, // Added for Secret Weapon
           },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
         console.log(`[joinRoom] Room ${roomId} created with starting FEN: ${room.fen} and default advantage states including PlayerAdvantageStates structure.`);
       } else {
-        // If room exists, ensure PlayerAdvantageStates and quantumLeapUsed are initialized
+        // If room exists, ensure PlayerAdvantageStates and its fields are initialized
         if (!room.whitePlayerAdvantageStates) {
-          room.whitePlayerAdvantageStates = { quantumLeapUsed: false };
-        } else if (room.whitePlayerAdvantageStates.quantumLeapUsed === undefined) {
-          room.whitePlayerAdvantageStates.quantumLeapUsed = false;
+          room.whitePlayerAdvantageStates = { quantumLeapUsed: false, secretWeaponPieceId: undefined };
+        } else {
+          if (room.whitePlayerAdvantageStates.quantumLeapUsed === undefined) {
+            room.whitePlayerAdvantageStates.quantumLeapUsed = false;
+          }
+          if (typeof room.whitePlayerAdvantageStates.hiddenHeir === 'undefined') {
+            room.whitePlayerAdvantageStates.hiddenHeir = undefined;
+          }
+          if (typeof room.whitePlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
+            room.whitePlayerAdvantageStates.hiddenHeirCaptured = false;
+          }
+          if (typeof room.whitePlayerAdvantageStates.secretWeaponPieceId === 'undefined') {
+            room.whitePlayerAdvantageStates.secretWeaponPieceId = undefined;
+          }
         }
+
         if (!room.blackPlayerAdvantageStates) {
-          room.blackPlayerAdvantageStates = { quantumLeapUsed: false };
-        } else if (room.blackPlayerAdvantageStates.quantumLeapUsed === undefined) {
-          room.blackPlayerAdvantageStates.quantumLeapUsed = false;
-        }
-        if (room.whitePlayerAdvantageStates && typeof room.whitePlayerAdvantageStates.hiddenHeir === 'undefined') {
-          room.whitePlayerAdvantageStates.hiddenHeir = undefined;
-        }
-        if (room.whitePlayerAdvantageStates && typeof room.whitePlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
-          room.whitePlayerAdvantageStates.hiddenHeirCaptured = false;
-        }
-        if (room.blackPlayerAdvantageStates && typeof room.blackPlayerAdvantageStates.hiddenHeir === 'undefined') {
-          room.blackPlayerAdvantageStates.hiddenHeir = undefined;
-        }
-        if (room.blackPlayerAdvantageStates && typeof room.blackPlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
-          room.blackPlayerAdvantageStates.hiddenHeirCaptured = false;
+          room.blackPlayerAdvantageStates = { quantumLeapUsed: false, secretWeaponPieceId: undefined };
+        } else {
+          if (room.blackPlayerAdvantageStates.quantumLeapUsed === undefined) {
+            room.blackPlayerAdvantageStates.quantumLeapUsed = false;
+          }
+          if (typeof room.blackPlayerAdvantageStates.hiddenHeir === 'undefined') {
+            room.blackPlayerAdvantageStates.hiddenHeir = undefined;
+          }
+          if (typeof room.blackPlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
+            room.blackPlayerAdvantageStates.hiddenHeirCaptured = false;
+          }
+          if (typeof room.blackPlayerAdvantageStates.secretWeaponPieceId === 'undefined') {
+            room.blackPlayerAdvantageStates.secretWeaponPieceId = undefined;
+          }
         }
         // Ensure other potentially missing states in PlayerAdvantageStates are also initialized if necessary
-        // This part needs to be comprehensive based on all advantages. For now, focusing on quantumLeapUsed.
+        // This part needs to be comprehensive based on all advantages.
 
         // If room exists, ensure all necessary sub-states are initialized (e.g., after server restart)
         if (!room.silentShieldPieces) room.silentShieldPieces = { white: null, black: null };
@@ -635,6 +649,52 @@ export function setupSocketHandlers(io: Server) {
                 blackAdvantageDetails.cloak = room.blackCloakState;
                 console.log(`[Cloak Server socketHandlers - advantageAssigned] Emitting cloak details for black:`, JSON.stringify(room.blackCloakState));
             }
+        // Ensure PlayerAdvantageStates are initialized before Secret Weapon assignment
+        if (!room.whitePlayerAdvantageStates) {
+            console.warn("[Secret Weapon] whitePlayerAdvantageStates was not initialized before assignment attempt. Initializing now.");
+            room.whitePlayerAdvantageStates = { secretWeaponPieceId: undefined };
+        }
+        if (!room.blackPlayerAdvantageStates) {
+            console.warn("[Secret Weapon] blackPlayerAdvantageStates was not initialized before assignment attempt. Initializing now.");
+            room.blackPlayerAdvantageStates = { secretWeaponPieceId: undefined };
+        }
+
+        // ---- START SECRET WEAPON ASSIGNMENT ----
+        if (room.whiteAdvantage?.id === 'secret_weapon' && room.white && room.pieceTracking) {
+            const whitePawns: string[] = [];
+            for (const [uid, pieceInfo] of Object.entries(room.pieceTracking)) {
+                if (pieceInfo.color === 'w' && pieceInfo.type === 'p' && pieceInfo.alive) {
+                    whitePawns.push(uid);
+                }
+            }
+            if (whitePawns.length > 0) {
+                const selectedPawnUid = whitePawns[Math.floor(Math.random() * whitePawns.length)];
+                room.whitePlayerAdvantageStates = room.whitePlayerAdvantageStates || {}; // Ensure object exists
+                room.whitePlayerAdvantageStates.secretWeaponPieceId = selectedPawnUid;
+                console.log(`[Secret Weapon] Assigned to white player ${room.white}: ${room.whitePlayerAdvantageStates.secretWeaponPieceId}`);
+            } else {
+                console.log(`[Secret Weapon] No white pawns available to assign for player ${room.white}.`);
+            }
+        }
+
+        if (room.blackAdvantage?.id === 'secret_weapon' && room.black && room.pieceTracking) {
+            const blackPawns: string[] = [];
+            for (const [uid, pieceInfo] of Object.entries(room.pieceTracking)) {
+                if (pieceInfo.color === 'b' && pieceInfo.type === 'p' && pieceInfo.alive) {
+                    blackPawns.push(uid);
+                }
+            }
+            if (blackPawns.length > 0) {
+                const selectedPawnUid = blackPawns[Math.floor(Math.random() * blackPawns.length)];
+                room.blackPlayerAdvantageStates = room.blackPlayerAdvantageStates || {}; // Ensure object exists
+                room.blackPlayerAdvantageStates.secretWeaponPieceId = selectedPawnUid;
+                console.log(`[Secret Weapon] Assigned to black player ${room.black}: ${room.blackPlayerAdvantageStates.secretWeaponPieceId}`);
+            } else {
+                console.log(`[Secret Weapon] No black pawns available to assign for player ${room.black}.`);
+            }
+        }
+        // ---- END SECRET WEAPON ASSIGNMENT ----
+
             if (room.blackAdvantage.id === "no_show_bishop") {
                 blackAdvantageDetails.noShowBishopUsed = room.blackNoShowBishopUsed || false;
                 if (room.blackNoShowBishopRemovedPiece) {
@@ -724,6 +784,27 @@ export function setupSocketHandlers(io: Server) {
         const receivedMove = clientMoveData as ServerMovePayload; // Use ServerMovePayload
         const originalFenBeforeAttempt = room.fen!; // Assert non-null if sure room.fen exists
 
+        // ---- Determine movedPieceUid ----
+        let movedPieceUid: string | undefined;
+        if (room.pieceTracking && senderColor) {
+          const pieceOnFromSquare = serverGame.get(receivedMove.from as Square); // serverGame is based on originalFenBeforeAttempt
+          if (pieceOnFromSquare) {
+            for (const [uid, info] of Object.entries(room.pieceTracking)) {
+              if (
+                info.square === receivedMove.from &&
+                info.type === pieceOnFromSquare.type &&
+                info.color === senderColor[0] && // senderColor is 'white' or 'black'
+                info.alive
+              ) {
+                movedPieceUid = uid;
+                break;
+              }
+            }
+          }
+        }
+        console.log(`[sendMove] Determined movedPieceUid: ${movedPieceUid} for square ${receivedMove.from}`);
+        // ---- End Determine movedPieceUid ----
+
         // --- Royal Decree Restriction Check ---
         let isRoyalDecreeOverridden = false; 
 
@@ -798,6 +879,8 @@ export function setupSocketHandlers(io: Server) {
         let currentPlayerKnightmareState: { hasUsed: boolean } | undefined;
         let playerCoordinatedPushState: CoordinatedPushState | undefined;
         const currentPlayerAdvantage = senderColor === 'white' ? room.whiteAdvantage : room.blackAdvantage;
+        // This was already defined up top, but re-asserting for clarity in this block
+        // const currentPlayerAdvantageStates = senderColor === 'white' ? room.whitePlayerAdvantageStates : room.blackPlayerAdvantageStates;
 
 
         if (senderColor === 'white') {
@@ -905,6 +988,46 @@ export function setupSocketHandlers(io: Server) {
           // If castleMasterResult.moveResult is null, serverGame should be reverted by handleCastleMaster or here.
           // Assuming handleCastleMaster reverts serverGame to 'currentFen' if moveResult is null.
           if (!moveResult) serverGame.load(originalFenBeforeAttempt!); // Ensure revert if special move fails
+        } else if (
+          receivedMove.special === 'secret_weapon' &&
+          currentPlayerAdvantage?.id === 'secret_weapon' &&
+          currentPlayerAdvantageStates?.secretWeaponPieceId &&
+          movedPieceUid === currentPlayerAdvantageStates.secretWeaponPieceId
+        ) {
+          console.log(`[sendMove] Attempting Secret Weapon move for piece ${movedPieceUid} (special flag detected)`);
+           moveResult = handleSecretWeaponMoveServer(
+            serverGame,
+            originalFenBeforeAttempt!,
+            receivedMove,
+            currentPlayerAdvantageStates,
+            movedPieceUid!
+          );
+
+          if (moveResult) {
+            // Update pieceTracking for Secret Weapon ---
+            if (room.pieceTracking && movedPieceUid) {
+              // Update the tracked square for the secret weapon piece
+              room.pieceTracking[movedPieceUid].square = moveResult.to;
+              // If you track history, push the new square
+              if (room.pieceTracking[movedPieceUid].history) {
+                room.pieceTracking[movedPieceUid].history.push(moveResult.to);
+              }
+            }
+            if ((moveResult as any).afterFen) {
+              room.fen = (moveResult as any).afterFen;
+            } else {
+              room.fen = serverGame.fen();
+            }
+          } else {
+            if (serverGame.fen() !== originalFenBeforeAttempt) {
+                serverGame.load(originalFenBeforeAttempt!);
+            }
+            socket.emit("invalidMove", { 
+              message: "Secret Weapon move invalid or illegal.", 
+              move: clientMoveData // clientMoveData is defined earlier from receivedMove
+            });
+            // moveResult remains null, subsequent blocks for successful moves won't run.
+          }
         } else if (receivedMove.special === "pawn_rush_manual") {
           if (senderColor === null) { 
             console.error(`[sendMove] senderColor is null before calling handlePawnRush for room ${roomId}. This should not happen.`);
@@ -1299,6 +1422,15 @@ export function setupSocketHandlers(io: Server) {
                 movedInfo.promotedTo = moveResult.promotion as PieceSymbol;
                 movedInfo.type = moveResult.promotion as PieceSymbol;
               }
+
+               // --- Secret Weapon Debug ---
+               if (
+                (room.whitePlayerAdvantageStates?.secretWeaponPieceId === movedPieceUid ||
+                 room.blackPlayerAdvantageStates?.secretWeaponPieceId === movedPieceUid)
+              ) {
+                console.log(`[SecretWeapon] Updated Secret Weapon piece (${movedPieceUid}):`, movedInfo);
+              }
+
               if (movedPieceUid && currentPlayerAdvantageStates) {
                 const originalHeirSquareBeforeMove = currentPlayerAdvantageStates.hiddenHeir?.square; 
                 updateHeirSquare(currentPlayerAdvantageStates, movedPieceUid, moveResult.to);
@@ -1894,6 +2026,7 @@ export function setupSocketHandlers(io: Server) {
                 }),
                 ...(room.whitePlayerAdvantageStates?.hiddenHeir && { hiddenHeir: room.whitePlayerAdvantageStates.hiddenHeir }),
                 ...(typeof room.whitePlayerAdvantageStates?.hiddenHeirCaptured === 'boolean' && { hiddenHeirCaptured: room.whitePlayerAdvantageStates.hiddenHeirCaptured }),
+                ...(room.whitePlayerAdvantageStates?.secretWeaponPieceId && { secretWeaponPieceId: room.whitePlayerAdvantageStates.secretWeaponPieceId }), // Include Secret Weapon
             };
             const blackCurrentAdvantageStates: PlayerAdvantageStates = {
                 ...(room.blackAdvantage?.id === 'royal_escort' && room.blackRoyalEscortState && { royalEscort: room.blackRoyalEscortState }),
@@ -1912,21 +2045,23 @@ export function setupSocketHandlers(io: Server) {
                 ...(room.blackPlayerAdvantageStates?.hiddenHeir && { hiddenHeir: room.blackPlayerAdvantageStates.hiddenHeir }),
                 ...(typeof room.blackPlayerAdvantageStates?.hiddenHeirCaptured === 'boolean' && { hiddenHeirCaptured: room.blackPlayerAdvantageStates.hiddenHeirCaptured }),
                 ...(room.blackPlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.blackPlayerAdvantageStates.quantumLeapUsed }),
+                ...(room.blackPlayerAdvantageStates?.secretWeaponPieceId && { secretWeaponPieceId: room.blackPlayerAdvantageStates.secretWeaponPieceId }), // Include Secret Weapon
             };
 
             const finalPayloadForReceiveMove = {
                 move: moveDataForBroadcast,
                 ...(updatedShieldedPieceForEmit && { updatedShieldedPiece: updatedShieldedPieceForEmit }),
                 whitePlayerAdvantageStatesFull: {
-                    ...whiteCurrentAdvantageStates,
-                    cloak: room.whiteCloakState || null, // Always include cloak, even if null
-                    quantumLeapUsed: room.whitePlayerAdvantageStates?.quantumLeapUsed, // Add quantumLeapUsed
+                    ...whiteCurrentAdvantageStates, // Contains all individual states including secretWeaponPieceId if present
+                    cloak: room.whiteCloakState || null, 
+                    quantumLeapUsed: room.whitePlayerAdvantageStates?.quantumLeapUsed,
                 },
                 blackPlayerAdvantageStatesFull: {
-                    ...blackCurrentAdvantageStates,
-                    cloak: room.blackCloakState || null, // Always include cloak, even if null
-                    quantumLeapUsed: room.blackPlayerAdvantageStates?.quantumLeapUsed, // Add quantumLeapUsed
+                    ...blackCurrentAdvantageStates, // Contains all individual states including secretWeaponPieceId if present
+                    cloak: room.blackCloakState || null,
+                    quantumLeapUsed: room.blackPlayerAdvantageStates?.quantumLeapUsed,
                 },
+                pieceTracking: room.pieceTracking,
             };
             console.log(`[Cloak Server socketHandlers - sendMove] Emitting finalPayloadForReceiveMove. WhiteFullStates: ${JSON.stringify(finalPayloadForReceiveMove.whitePlayerAdvantageStatesFull)}, BlackFullStates: ${JSON.stringify(finalPayloadForReceiveMove.blackPlayerAdvantageStatesFull)}`);
             io.to(roomId).emit("receiveMove", finalPayloadForReceiveMove);
@@ -2622,6 +2757,7 @@ export function setupSocketHandlers(io: Server) {
             ...(room.whiteAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.whiteNoShowBishopUsed, noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece }),
             ...(room.whiteRecallState && { recall: room.whiteRecallState }), // Include recall state
             ...(room.whitePlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.whitePlayerAdvantageStates.quantumLeapUsed }),
+            ...(room.whitePlayerAdvantageStates?.secretWeaponPieceId && { secretWeaponPieceId: room.whitePlayerAdvantageStates.secretWeaponPieceId }), // Include Secret Weapon
           };
           const blackPlayerAdvantageStatesFull: PlayerAdvantageStates = {
             ...(room.blackAdvantage?.id === 'royal_escort' && { royalEscort: room.blackRoyalEscortState }),
@@ -2636,6 +2772,7 @@ export function setupSocketHandlers(io: Server) {
             ...(room.blackAdvantage?.id === 'no_show_bishop' && { noShowBishopUsed: room.blackNoShowBishopUsed, noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece }),
             ...(room.blackRecallState && { recall: room.blackRecallState }), // Include recall state
             ...(room.blackPlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.blackPlayerAdvantageStates.quantumLeapUsed }),
+            ...(room.blackPlayerAdvantageStates?.secretWeaponPieceId && { secretWeaponPieceId: room.blackPlayerAdvantageStates.secretWeaponPieceId }), // Include Secret Weapon
           };
 
           io.to(roomId).emit("receiveMove", { 

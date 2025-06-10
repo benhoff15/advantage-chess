@@ -33,7 +33,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
   { id: "second_wind", name: "Second Wind", description: "After checkmate, get one move to counter-mate.", rarity: "legendary" },
   { id: "quantum_leap", name: "Quantum Leap", description: "Swap any two of your pieces once. Doesn't count as a turn", rarity: "legendary" }, // done
   { id: "secret_weapon", name: "Secret Weapon", description: "One pawn is secretly a queen in disguise.", rarity: "legendary" },
-  { id: "hidden_heir", name: "Hidden Heir", description: "Select one piece before the game starts. This piece must be captured before the opponent can checkmate.", rarity: "legendary" },
+  { id: "hidden_heir", name: "Hidden Heir", description: "Select one piece before the game starts. This piece must be captured before the opponent can checkmate.", rarity: "legendary" }, // done
   // Rotate in later{ id: "time_rewind", name: "Time Rewind", description: "Undo both players’ last full moves after a capture.", rarity: "legendary" },
   // Rotate in later{ id: "flash_forward", name: "Flash Forward", description: "Skip your opponent’s turn once. Time bends for you.", rarity: "legendary"},
   // Rotate in later{ id: "doppelganger", name: "Doppelgänger", description: "Choose a piece to mimic the abilities of an enemy piece it's facing.", rarity: "legendary"},

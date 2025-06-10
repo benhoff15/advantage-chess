@@ -73,6 +73,7 @@ export interface PlayerAdvantageStates {
   quantumLeapUsed?: boolean;
   hiddenHeir?: { square: string, pieceId: string };
   hiddenHeirCaptured?: boolean;
+  secretWeaponPieceId?: string;
 }
 
 export interface RecallState {

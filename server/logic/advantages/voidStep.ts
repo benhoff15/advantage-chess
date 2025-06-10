@@ -36,7 +36,7 @@ export function validateVoidStepServerMove({
 
   // If void step is not active, return null to let normal move validation handle it
   if (!voidStepState?.isActive) {
-    console.log("[Void Step Server Debug] Void step not active");
+    //console.log("[Void Step Server Debug] Void step not active");
     return {
       moveResult: null,
       nextFen: currentFen,
@@ -45,11 +45,11 @@ export function validateVoidStepServerMove({
 
   const { from, to } = clientMoveData;
   const piece = game.get(from as Square);
-  console.log("[Void Step Server Debug] Piece details:", piece);
+  //console.log("[Void Step Server Debug] Piece details:", piece);
 
   // Basic validation
   if (!piece || piece.color !== playerColor) {
-    console.log("[Void Step Server Debug] Invalid piece or color");
+    //console.log("[Void Step Server Debug] Invalid piece or color");
     return {
       moveResult: null,
       nextFen: currentFen,
@@ -59,7 +59,7 @@ export function validateVoidStepServerMove({
 
   // Don't allow king to use void step
   if (piece.type === 'k') {
-    console.log("[Void Step Server Debug] King cannot use void step");
+    //console.log("[Void Step Server Debug] King cannot use void step");
     return {
       moveResult: null,
       nextFen: currentFen,
@@ -71,10 +71,10 @@ export function validateVoidStepServerMove({
   const tempGame = new Chess(currentFen);
   
   try {
-    console.log("[Void Step Server Debug] Attempting move");
+    //console.log("[Void Step Server Debug] Attempting move");
     // For Void Step, temporarily remove only friendly pieces in the path
     const path = getVoidStepPath(from as Square, to as Square, piece.type);
-    console.log("[Void Step Server Debug] Path to clear:", path);
+    //console.log("[Void Step Server Debug] Path to clear:", path);
     
     // Store friendly pieces in the path
     const friendlyPathPieces = path
@@ -104,7 +104,7 @@ export function validateVoidStepServerMove({
     }
 
     if (!moveResult) {
-      console.log("[Void Step Server Debug] Invalid move");
+      //console.log("[Void Step Server Debug] Invalid move");
       return {
         moveResult: null,
         nextFen: currentFen,
@@ -118,14 +118,14 @@ export function validateVoidStepServerMove({
       hasUsed: true,
     };
 
-    console.log("[Void Step Server Debug] Move successful, updating state:", updatedVoidStepState);
+    //console.log("[Void Step Server Debug] Move successful, updating state:", updatedVoidStepState);
     return {
       moveResult,
       nextFen: tempGame.fen(),
       updatedVoidStepState,
     };
   } catch (error) {
-    console.log("[Void Step Server Debug] Move validation failed:", error);
+    //console.log("[Void Step Server Debug] Move validation failed:", error);
     return {
       moveResult: null,
       nextFen: currentFen,

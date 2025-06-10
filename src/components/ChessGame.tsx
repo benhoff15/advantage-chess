@@ -57,6 +57,7 @@ import { shouldHidePiece } from "../logic/advantages/cloak";
 import { PlayerAdvantageStates, CloakState } from "../../shared/types"; // This is the one used for opponentAdvantageStates etc.
 import { applyQuantumLeapClient, getQuantumLeapPayload } from "../logic/advantages/quantumLeap";
 import { handleHeirSelectionClient, getHiddenHeirDisplaySquare, isClientHeirCaptured } from "../logic/advantages/hiddenHeir";
+import { getSecretWeaponLegalMoves, getSecretWeaponDisplayInfo, PieceTrackingClientType } from "../logic/advantages/secretWeapon";
 import { toast } from "react-toastify";
 // Square is already imported from chess.js
 
@@ -177,7 +178,8 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   const [isQuantumLeapActive, setIsQuantumLeapActive] = useState<boolean>(false);
   const [quantumLeapSelections, setQuantumLeapSelections] = useState<Square[]>([]);
   const [hiddenHeirSelectionInfo, setHiddenHeirSelectionInfo] = useState<{ square: Square | null, pieceId: string | null, captured: boolean }>({ square: null, pieceId: null, captured: false });
-  const [pieceTracking, setPieceTracking] = useState<Record<string, { type: string; color: string; square: string; alive: boolean }> | null>(null);
+  const [pieceTracking, setPieceTracking] = useState<PieceTrackingClientType | null>(null);
+  const [secretWeaponInfo, setSecretWeaponInfo] = useState<{ text: string; pieceId: string; currentSquare: string | null } | null>(null);
 
   useEffect(() => {
     if (myAdvantage?.id !== 'sacrificial_blessing') {
@@ -287,8 +289,27 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     setIsRecallActive(false); // Reset active state if advantage changes away from recall
     // myRecallState will be set to null by advantageAssigned or receiveMove if needed
   }
+  
+  // Secret Weapon Info Update
+  if (myAdvantage?.id === 'secret_weapon' && color) {
+    const currentAdvStates = color === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
+    console.log('[SecretWeapon Effect] color:', color, 'currentAdvStates:', currentAdvStates, 'pieceTracking:', pieceTracking);
+    if (currentAdvStates && pieceTracking) {
+      const chessJsColor = color === 'white' ? 'w' : 'b';
+      const info = getSecretWeaponDisplayInfo(currentAdvStates, pieceTracking, chessJsColor);
+      console.log('[SecretWeapon Effect] getSecretWeaponDisplayInfo result:', info);
+      setSecretWeaponInfo(info);
+    } else {
+      setSecretWeaponInfo(null); // Clear if states/tracking not ready
+      if (currentAdvStates !== null && pieceTracking !== null) {
+      console.log('[ChessGame SecretWeapon] Clearing display info due to missing states or pieceTracking.');
+    }
+  }
+  } else {
+    setSecretWeaponInfo(null); // Clear if not secret weapon advantage
+  }
 
-  }, [myAdvantage, arcaneReinforcementSpawnedSquare, playerColor]);
+  }, [myAdvantage, arcaneReinforcementSpawnedSquare, playerColor, color, whitePlayerAdvantageStates, blackPlayerAdvantageStates, pieceTracking]); // Added dependencies for Secret Weapon
 
   useEffect(() => {
     const handleAdvantageStateUpdate = (data: any) => {
@@ -391,7 +412,12 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     };
     socket.on("opponentDisconnected", handleOpponentDisconnected);
 
-    const handleGameStart = (data: { fen: string; pieceTracking?: Record<string, { type: string; color: string; square: string; alive: boolean }> }) => {
+    const handleGameStart = (data: {
+      fen: string;
+      pieceTracking?: Record<string, { type: string; color: string; square: string; alive: boolean }>;
+      whitePlayerAdvantageStatesFull?: PlayerAdvantageStates;
+      blackPlayerAdvantageStatesFull?: PlayerAdvantageStates;
+    }) => {
       console.log("[ChessGame event] gameStart. Loading FEN:", data.fen);
       try {
         game.load(data.fen);
@@ -401,6 +427,25 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         if (data.pieceTracking) {
           setPieceTracking(data.pieceTracking);
           console.log("[HiddenHeir] pieceTracking set on gameStart:", data.pieceTracking);
+        }
+        if (data.whitePlayerAdvantageStatesFull) {
+          setWhitePlayerAdvantageStates(data.whitePlayerAdvantageStatesFull);
+          console.log("[SecretWeapon] whitePlayerAdvantageStates set on gameStart:", data.whitePlayerAdvantageStatesFull);
+        }
+        if (data.blackPlayerAdvantageStatesFull) {
+          setBlackPlayerAdvantageStates(data.blackPlayerAdvantageStatesFull);
+          console.log("[SecretWeapon] blackPlayerAdvantageStates set on gameStart:", data.blackPlayerAdvantageStatesFull);
+        }
+        if (
+          myAdvantage?.id === 'secret_weapon' &&
+          data.pieceTracking &&
+          ((color === 'white' && data.whitePlayerAdvantageStatesFull) ||
+          (color === 'black' && data.blackPlayerAdvantageStatesFull))
+        ) {
+          const advStates = color === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
+          const chessJsColor = color === 'white' ? 'w' : 'b';
+          const info = getSecretWeaponDisplayInfo(advStates ?? null, pieceTracking, chessJsColor);
+          setSecretWeaponInfo(info);
         }
       } catch (e) {
         console.error("[ChessGame event gameStart] Error loading FEN from gameStart event:", e, "FEN was:", data.fen);
@@ -1255,7 +1300,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
   const handleActivateVoidStep = () => {
     if (!socket) return;
-    console.log("[Void Step UI Debug] Activating Void Step");
+    //console.log("[Void Step UI Debug] Activating Void Step");
     setIsVoidStepToggleActive(true);  // Set the toggle state to true
     socket.emit('activate_void_step');
   };
@@ -1263,15 +1308,6 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   const currentPlayerAdvantageStates = playerColor === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
   const canUseVoidStep = currentPlayerAdvantageStates && isVoidStepAvailable(currentPlayerAdvantageStates);
 
-  console.log("[Void Step UI Debug] State:", {
-    myAdvantage,
-    playerColor,
-    currentPlayerAdvantageStates,
-    canUseVoidStep,
-    isPlayerTurn: color && game.turn() === color[0],
-    voidStepState: currentPlayerAdvantageStates?.voidStep,
-    isVoidStepToggleActive
-  });
 
   // Add debug logs in onSquareClick
   const onSquareClick = (squareClicked: Square) => {
@@ -1385,13 +1421,6 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       setIsRecallActive(false); // Deactivate after attempt, success or fail
       return; // Important: consume the click
     }
-    console.log("[Void Step UI Debug] Square clicked:", {
-      square: squareClicked,
-      isVoidStepToggleActive,
-      selectedSquare,
-      validMoves,
-      piece: game.get(squareClicked)
-    });
 
     // Void Step handling
     if (
@@ -1405,20 +1434,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       // PATCH: If you click a piece of yours (not king), always update highlights and selectedSquare
       const piece = game.get(squareClicked);
       if (piece && piece.color === color[0] && piece.type !== 'k') {
-        console.log("[Void Step UI Debug] Valid piece selected for Void Step");
+        //console.log("[Void Step UI Debug] Valid piece selected for Void Step");
         const moves = getValidVoidStepMoves(game, squareClicked, color[0], currentPlayerAdvantageStates.voidStep);
-        console.log("[Void Step UI Debug] Valid moves for piece:", moves);
+        //console.log("[Void Step UI Debug] Valid moves for piece:", moves);
         setSelectedSquare(squareClicked);
         setValidMoves(moves);
         return; // PATCH: Always return after highlighting, do not fall through
       }
       // If you click a highlighted valid move, make the move
       if (selectedSquare && validMoves.includes(squareClicked)) {
-        console.log("[Void Step UI Debug] Attempting Void Step move:", {
-          from: selectedSquare,
-          to: squareClicked,
-          validMoves
-        });
         makeMove(selectedSquare, squareClicked);
         setSelectedSquare(null);
         setValidMoves([]);
@@ -1673,7 +1697,31 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       const piece = game.get(squareClicked);
       if (piece && piece.color === color?.[0]) {
         setSelectedSquare(squareClicked);
-        setValidMoves(game.moves({ square: squareClicked, verbose: true }).map(move => move.to as Square));
+        let moves: Square[] = [];
+        const currentAdvStates = color === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
+
+        if (myAdvantage?.id === 'secret_weapon' && currentAdvStates?.secretWeaponPieceId && pieceTracking && color) {
+          let clickedPieceUid: string | undefined;
+          for (const [uid, info] of Object.entries(pieceTracking)) {
+            if (info.square === squareClicked && info.color === color[0] && info.alive) {
+              clickedPieceUid = uid;
+              break;
+            }
+          }
+          console.log('[SecretWeapon Click] Clicked UID:', clickedPieceUid, 'Expected UID:', currentAdvStates.secretWeaponPieceId, 'PieceTracking entry:', pieceTracking[clickedPieceUid ?? '']);
+          if (clickedPieceUid === currentAdvStates.secretWeaponPieceId) {
+            const chessJsPlayerColor = color === 'white' ? 'w' : 'b'; // color is "white" or "black" here
+            moves = getSecretWeaponLegalMoves(game, squareClicked, chessJsPlayerColor, currentAdvStates, pieceTracking);
+            console.log('[SecretWeapon Click] Legal moves for Secret Weapon:', moves);
+          } else {
+            // Not the secret weapon, or some info missing, get standard moves
+            moves = game.moves({ square: squareClicked, verbose: true }).map(move => move.to as Square);
+          }
+        } else {
+          // No secret weapon advantage, or some info missing, get standard moves
+          moves = game.moves({ square: squareClicked, verbose: true }).map(move => move.to as Square);
+        }
+        setValidMoves(moves);
       }
     }
   };
@@ -1735,6 +1783,44 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     }
     if (!color) return null;
     const myColor = color;
+
+    if (
+      myAdvantage?.id === 'secret_weapon' &&
+      currentPlayerAdvantageStates?.secretWeaponPieceId &&
+      pieceTracking
+    ) {
+      // Find the UID of the piece being moved
+      let movedPieceUid: string | undefined;
+      for (const [uid, info] of Object.entries(pieceTracking)) {
+        if (info.square === from && info.color === color[0] && info.alive) {
+          movedPieceUid = uid;
+          break;
+        }
+      }
+      if (movedPieceUid === currentPlayerAdvantageStates.secretWeaponPieceId) {
+        // Generate queen moves for this piece
+        const chessJsPlayerColor = color === 'white' ? 'w' : 'b';
+        const queenMoves = getSecretWeaponLegalMoves(
+          game,
+          from as Square,
+          chessJsPlayerColor,
+          currentPlayerAdvantageStates,
+          pieceTracking
+        );
+        if (queenMoves.includes(to as Square)) {
+          // Send as special move
+          const movePayloadToSend = {
+            from,
+            to,
+            color: myColor,
+            special: "secret_weapon"
+          };
+          console.log("[SecretWeapon] Emitting secret weapon move:", movePayloadToSend);
+          socket.emit("sendMove", { roomId, move: movePayloadToSend });
+          return null;
+        }
+      }
+    }
 
     if (showOpeningSwapPrompt && game.history().length === 0) {
       setShowOpeningSwapPrompt(false);
@@ -2961,6 +3047,14 @@ socket.on("boardRevert", handleBoardRevert);
           {myAdvantage?.id === 'quantum_leap' &&
            ((color === 'white' ? whitePlayerAdvantageStates?.quantumLeapUsed : blackPlayerAdvantageStates?.quantumLeapUsed)) && (
             <p style={{ margin: '5px', fontStyle: 'italic' }}>Quantum Leap has been used.</p>
+          )}
+
+          {/* Secret Weapon Info Box */}
+          {myAdvantage?.id === 'secret_weapon' && secretWeaponInfo && (
+            <div style={{ padding: '10px', margin: '10px 0', background: '#dcedc8', border: '1px solid #a5d6a7', borderRadius: '4px' }}>
+              <p><strong>{secretWeaponInfo.text}</strong></p>
+              {secretWeaponInfo.currentSquare && <p>(Piece ID: {secretWeaponInfo.pieceId})</p>}
+            </div>
           )}
         </div>
       )}

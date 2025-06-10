@@ -7,9 +7,9 @@ export interface VoidStepClientState {
 }
 
 export function isVoidStepAvailable(state: PlayerAdvantageStates): boolean {
-  console.log("[Void Step Debug] Checking availability:", { state });
+  //console.log("[Void Step Debug] Checking availability:", { state });
   const isAvailable = state.voidStep !== undefined && state.voidStep.hasUsed === false;
-  console.log("[Void Step Debug] Is available:", isAvailable);
+  //console.log("[Void Step Debug] Is available:", isAvailable);
   return isAvailable;
 }
 
@@ -29,25 +29,25 @@ export function canPieceUseVoidStep(
   });
 
   if (!voidStepState?.isActive) {
-    console.log("[Void Step Debug] Void step not active");
+    //console.log("[Void Step Debug] Void step not active");
     return false;
   }
   
   const piece = game.get(from);
   if (!piece || piece.color !== playerColor) {
-    console.log("[Void Step Debug] Invalid piece or color");
+    //console.log("[Void Step Debug] Invalid piece or color");
     return false;
   }
   
   if (piece.type === 'k') {
-    console.log("[Void Step Debug] King cannot use void step");
+    //console.log("[Void Step Debug] King cannot use void step");
     return false;
   }
   
   // Get valid moves for the piece
   const validMoves = getValidVoidStepMoves(game, from, playerColor, voidStepState);
   const canMove = validMoves.includes(to);
-  console.log("[Void Step Debug] Can move:", canMove, "Valid moves:", validMoves);
+  //console.log("[Void Step Debug] Can move:", canMove, "Valid moves:", validMoves);
   return canMove;
 }
 
@@ -99,7 +99,7 @@ export function getValidVoidStepMoves(
   });
 
   if (!voidStepState?.isActive) {
-    console.log("[Void Step Debug] Void step not active");
+    //console.log("[Void Step Debug] Void step not active");
     return [];
   }
   
