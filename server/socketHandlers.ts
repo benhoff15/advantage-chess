@@ -5,6 +5,7 @@ import { Advantage, ShieldedPieceInfo, PlayerAdvantageStates, RoyalEscortState, 
 import { assignCloakedPiece, handleCloakTurn, removeCloakOnCapture } from "./logic/advantages/cloak";
 import { applyArcaneReinforcement } from "./logic/advantages/arcaneReinforcement";
 import { validateRecallServerWithUID } from './logic/advantages/recall';
+import { setHiddenHeirServer, isHeirAlive, handleHeirCaptured, checkHeirPromotion, updateHeirSquare } from './logic/advantages/hiddenHeir';
 import { handleNoShowBishopServer } from './logic/advantages/noShowBishop';
 import { handleQueenlyCompensation } from './logic/advantages/queenlyCompensation';
 import { handlePawnRush } from "./logic/advantages/pawnRush";
@@ -242,6 +243,8 @@ export function setupSocketHandlers(io: Server) {
             noShowBishopRemovedPiece: undefined,
             voidStep: { isActive: false, hasUsed: false },
             quantumLeapUsed: false, // Initialize Quantum Leap
+            hiddenHeir: undefined,
+            hiddenHeirCaptured: false,
           },
           blackPlayerAdvantageStates: {
             royalEscort: undefined,
@@ -260,6 +263,8 @@ export function setupSocketHandlers(io: Server) {
             noShowBishopRemovedPiece: undefined,
             voidStep: { isActive: false, hasUsed: false },
             quantumLeapUsed: false, // Initialize Quantum Leap
+            hiddenHeir: undefined,
+            hiddenHeirCaptured: false,
           },
         };
         room = rooms[roomId]; // Assign the newly created room to the local variable
@@ -275,6 +280,18 @@ export function setupSocketHandlers(io: Server) {
           room.blackPlayerAdvantageStates = { quantumLeapUsed: false };
         } else if (room.blackPlayerAdvantageStates.quantumLeapUsed === undefined) {
           room.blackPlayerAdvantageStates.quantumLeapUsed = false;
+        }
+        if (room.whitePlayerAdvantageStates && typeof room.whitePlayerAdvantageStates.hiddenHeir === 'undefined') {
+          room.whitePlayerAdvantageStates.hiddenHeir = undefined;
+        }
+        if (room.whitePlayerAdvantageStates && typeof room.whitePlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
+          room.whitePlayerAdvantageStates.hiddenHeirCaptured = false;
+        }
+        if (room.blackPlayerAdvantageStates && typeof room.blackPlayerAdvantageStates.hiddenHeir === 'undefined') {
+          room.blackPlayerAdvantageStates.hiddenHeir = undefined;
+        }
+        if (room.blackPlayerAdvantageStates && typeof room.blackPlayerAdvantageStates.hiddenHeirCaptured === 'undefined') {
+          room.blackPlayerAdvantageStates.hiddenHeirCaptured = false;
         }
         // Ensure other potentially missing states in PlayerAdvantageStates are also initialized if necessary
         // This part needs to be comprehensive based on all advantages. For now, focusing on quantumLeapUsed.
@@ -648,7 +665,7 @@ export function setupSocketHandlers(io: Server) {
         if (room.fen && room.fenHistory && room.fenHistory.length === 0) {
           room.fenHistory.push(room.fen);
         }
-        io.to(roomId).emit("gameStart", { fen: room.fen, whitePlayer: room.white, blackPlayer: room.black });
+        io.to(roomId).emit("gameStart", { fen: room.fen, whitePlayer: room.white, blackPlayer: room.black, pieceTracking: room.pieceTracking, });
         io.to(roomId).emit("opponentJoined"); // This might be redundant if gameStart implies opponent is there.
                                             // Or, it could be useful for client-side logic that specifically waits for this.
                                             // Keeping it for now as per existing structure.
@@ -674,15 +691,21 @@ export function setupSocketHandlers(io: Server) {
         let senderColor: "white" | "black" | null = null;
         let opponentColor: "white" | "black" | null = null;
         let opponentAdvantage: Advantage | undefined;
+        let currentPlayerAdvantageStates: PlayerAdvantageStates | undefined = senderColor === 'white' ? room.whitePlayerAdvantageStates : room.blackPlayerAdvantageStates;
+        let opponentPlayerAdvantageStates: PlayerAdvantageStates | undefined = opponentColor === 'white' ? room.whitePlayerAdvantageStates : room.blackPlayerAdvantageStates;
 
         if (senderId === room.white) {
           senderColor = "white";
           opponentColor = "black";
           opponentAdvantage = room.blackAdvantage;
+          currentPlayerAdvantageStates = room.whitePlayerAdvantageStates;
+          opponentPlayerAdvantageStates = room.blackPlayerAdvantageStates;
         } else if (senderId === room.black) {
           senderColor = "black";
           opponentColor = "white";
           opponentAdvantage = room.whiteAdvantage;
+          currentPlayerAdvantageStates = room.blackPlayerAdvantageStates;
+          opponentPlayerAdvantageStates = room.whitePlayerAdvantageStates;
         } else {
           console.error(`[sendMove] Sender ${senderId} not in room ${roomId}.`);
           socket.emit("serverError", { message: "You are not a player in this room." });
@@ -1193,7 +1216,8 @@ export function setupSocketHandlers(io: Server) {
               },
               blackPlayerAdvantageStatesFull: {
                 cloak: room.blackCloakState || null,
-              }
+              },
+              pieceTracking: room.pieceTracking
             });
 
             console.log("[CP DEBUG] Coordinated Push move processed and emitted. Returning to prevent fallback logic.");
@@ -1275,6 +1299,20 @@ export function setupSocketHandlers(io: Server) {
                 movedInfo.promotedTo = moveResult.promotion as PieceSymbol;
                 movedInfo.type = moveResult.promotion as PieceSymbol;
               }
+              if (movedPieceUid && currentPlayerAdvantageStates) {
+                const originalHeirSquareBeforeMove = currentPlayerAdvantageStates.hiddenHeir?.square; 
+                updateHeirSquare(currentPlayerAdvantageStates, movedPieceUid, moveResult.to);
+                if (currentPlayerAdvantageStates.hiddenHeir?.pieceId === movedPieceUid && originalHeirSquareBeforeMove !== currentPlayerAdvantageStates.hiddenHeir?.square) {
+                    console.log("[HiddenHeir sendMove] Current player's heir " + movedPieceUid + " moved. New square: " + currentPlayerAdvantageStates.hiddenHeir?.square + ".");
+                }
+                if (moveResult.promotion) {
+                  const oldCapturedStatusPromotion = currentPlayerAdvantageStates.hiddenHeirCaptured;
+                  checkHeirPromotion(currentPlayerAdvantageStates, movedPieceUid, moveResult.promotion as string);
+                  if (oldCapturedStatusPromotion !== currentPlayerAdvantageStates.hiddenHeirCaptured) {
+                      console.log("[HiddenHeir sendMove] Current player's heir " + movedPieceUid + " promoted and considered captured. New status: " + currentPlayerAdvantageStates.hiddenHeirCaptured + ".");
+                  }
+                }
+              }
             }
 
             // Handle captures: mark captured piece as not alive and square = null
@@ -1289,6 +1327,13 @@ export function setupSocketHandlers(io: Server) {
                   info.alive = false;
                   info.square = null;
                   info.history.push(moveResult.to);
+                  if (opponentPlayerAdvantageStates) { 
+                    const oldCapturedStatus = opponentPlayerAdvantageStates.hiddenHeirCaptured;
+                    handleHeirCaptured(opponentPlayerAdvantageStates, uid, room.pieceTracking); 
+                    if (oldCapturedStatus !== opponentPlayerAdvantageStates.hiddenHeirCaptured) {
+                      console.log("[HiddenHeir sendMove] Opponent's heir " + uid + " captured. New status: " + opponentPlayerAdvantageStates.hiddenHeirCaptured + ".");
+                    }
+                  }
                   break;
                 }
               }
@@ -1847,6 +1892,8 @@ export function setupSocketHandlers(io: Server) {
                     noShowBishopUsed: room.whiteNoShowBishopUsed,
                     noShowBishopRemovedPiece: room.whiteNoShowBishopRemovedPiece 
                 }),
+                ...(room.whitePlayerAdvantageStates?.hiddenHeir && { hiddenHeir: room.whitePlayerAdvantageStates.hiddenHeir }),
+                ...(typeof room.whitePlayerAdvantageStates?.hiddenHeirCaptured === 'boolean' && { hiddenHeirCaptured: room.whitePlayerAdvantageStates.hiddenHeirCaptured }),
             };
             const blackCurrentAdvantageStates: PlayerAdvantageStates = {
                 ...(room.blackAdvantage?.id === 'royal_escort' && room.blackRoyalEscortState && { royalEscort: room.blackRoyalEscortState }),
@@ -1862,6 +1909,8 @@ export function setupSocketHandlers(io: Server) {
                     noShowBishopUsed: room.blackNoShowBishopUsed,
                     noShowBishopRemovedPiece: room.blackNoShowBishopRemovedPiece
                 }),
+                ...(room.blackPlayerAdvantageStates?.hiddenHeir && { hiddenHeir: room.blackPlayerAdvantageStates.hiddenHeir }),
+                ...(typeof room.blackPlayerAdvantageStates?.hiddenHeirCaptured === 'boolean' && { hiddenHeirCaptured: room.blackPlayerAdvantageStates.hiddenHeirCaptured }),
                 ...(room.blackPlayerAdvantageStates?.quantumLeapUsed !== undefined && { quantumLeapUsed: room.blackPlayerAdvantageStates.quantumLeapUsed }),
             };
 
@@ -1906,22 +1955,70 @@ export function setupSocketHandlers(io: Server) {
         // The `isDeflected` block above doesn't re-check for game over.
         // Let's assume game over checks are only for non-deflected, successful moves.
         if (moveResult && room.fen === serverGame.fen()) { // Ensure serverGame is authoritative
+            // ---- START OF REPLACEMENT FOR GAME OVER LOGIC ----
             if (serverGame.isCheckmate()) {
-                const loserTurn = serverGame.turn(); // 'w' if white is checkmated, 'b' if black is checkmated
-                const winnerColor = loserTurn === 'w' ? 'black' : 'white';
+              const loserTurn = serverGame.turn(); 
+              const checkmatedPlayerColor = loserTurn === 'w' ? 'white' : 'black';
+              const winnerColor = loserTurn === 'w' ? 'black' : 'white';
+              
+              const checkmatedPlayerAdvantageStates = (checkmatedPlayerColor === 'white') 
+                                                    ? room.whitePlayerAdvantageStates 
+                                                    : room.blackPlayerAdvantageStates;
+
+              // --- Hidden Heir Debug Logging ---
+              console.log(`[HiddenHeir DEBUG] Checkmate detected. FEN: ${serverGame.fen()}`);
+              console.log(`[HiddenHeir DEBUG] checkmatedPlayerColor: ${checkmatedPlayerColor}, winnerColor: ${winnerColor}`);
+              console.log(`[HiddenHeir DEBUG] checkmatedPlayerAdvantageStates:`, JSON.stringify(checkmatedPlayerAdvantageStates));
+              if (room.pieceTracking) {
+                console.log(`[HiddenHeir DEBUG] pieceTracking keys:`, Object.keys(room.pieceTracking));
+                if (checkmatedPlayerAdvantageStates?.hiddenHeir?.pieceId) {
+                  console.log(`[HiddenHeir DEBUG] Expected Heir pieceId: ${checkmatedPlayerAdvantageStates.hiddenHeir.pieceId}`);
+                  console.log(`[HiddenHeir DEBUG] Heir pieceTracking entry:`, JSON.stringify(room.pieceTracking[checkmatedPlayerAdvantageStates.hiddenHeir.pieceId]));
+                }
+              } else {
+                console.log(`[HiddenHeir DEBUG] pieceTracking is undefined!`);
+              }
+
+              let heirIsActuallyAlive = false;
+              if (checkmatedPlayerAdvantageStates?.hiddenHeir?.pieceId && 
+                  (checkmatedPlayerAdvantageStates.hiddenHeirCaptured === false || typeof checkmatedPlayerAdvantageStates.hiddenHeirCaptured === 'undefined') ) {
+                heirIsActuallyAlive = isHeirAlive(checkmatedPlayerAdvantageStates, room.pieceTracking);
+                console.log(`[HiddenHeir DEBUG] isHeirAlive() returned: ${heirIsActuallyAlive}`);
+              } else {
+                console.log(`[HiddenHeir DEBUG] No valid hiddenHeir or already marked captured.`);
+              }
+
+              if (heirIsActuallyAlive) {
+                console.log("[HiddenHeir sendMove] Checkmate attempted on " + checkmatedPlayerColor + " by " + senderColor + " but heir " + checkmatedPlayerAdvantageStates!.hiddenHeir!.pieceId + " is alive. Reverting move.");
+                
+                serverGame.load(originalFenBeforeAttempt); 
+                room.fen = originalFenBeforeAttempt;
+                
+                const playerSocket = io.sockets.sockets.get(senderId); 
+                if (playerSocket) {
+                  playerSocket.emit("invalidMove", { 
+                    message: "Checkmate is blocked: The Hidden Heir is still alive.", 
+                    move: clientMoveData 
+                  });
+                }
+                 io.to(roomId).emit("boardRevert", { fen: originalFenBeforeAttempt });
+              } else {
+                console.log("[HiddenHeir sendMove] Checkmate valid on " + checkmatedPlayerColor + " by " + senderColor + ". Heir status: captured = " + checkmatedPlayerAdvantageStates?.hiddenHeirCaptured + ", alive = " + heirIsActuallyAlive + ".");
                 io.to(roomId).emit("gameOver", { 
-                    message: `${winnerColor.charAt(0).toUpperCase() + winnerColor.slice(1)} wins by checkmate!`,
-                    winnerColor: winnerColor 
+                  message: winnerColor.charAt(0).toUpperCase() + winnerColor.slice(1) + " wins by checkmate!",
+                  winnerColor: winnerColor 
                 });
+              }
             } else if (serverGame.isDraw()) {
-                io.to(roomId).emit("gameOver", { message: "Draw!", winnerColor: null });
+              io.to(roomId).emit("gameOver", { message: "Draw!", winnerColor: null });
             } else if (serverGame.isStalemate()) {
-                io.to(roomId).emit("gameOver", { message: "Stalemate!", winnerColor: null });
+              io.to(roomId).emit("gameOver", { message: "Stalemate!", winnerColor: null });
             } else if (serverGame.isThreefoldRepetition()) {
-                io.to(roomId).emit("gameOver", { message: "Draw by Threefold Repetition!", winnerColor: null });
+              io.to(roomId).emit("gameOver", { message: "Draw by Threefold Repetition!", winnerColor: null });
             } else if (serverGame.isInsufficientMaterial()) {
-                io.to(roomId).emit("gameOver", { message: "Draw by Insufficient Material!", winnerColor: null });
+              io.to(roomId).emit("gameOver", { message: "Draw by Insufficient Material!", winnerColor: null });
             }
+            // ---- END OF REPLACEMENT FOR GAME OVER LOGIC ----
             // Standard turn update logic might be here or handled by FEN
             // room.turn = serverGame.turn() === 'w' ? 'white' : 'black'; // Example
             // io.to(roomId).emit("turnChange", { turn: room.turn, fen: room.fen }); // Example
@@ -2556,6 +2653,85 @@ export function setupSocketHandlers(io: Server) {
       } catch (error) {
         console.error(`[recall_piece] Error during recall for room ${roomId}:`, error);
         socket.emit("recallFailed", { message: "An unexpected error occurred during recall." });
+      }
+    });
+
+    socket.on("set_hidden_heir", ({ roomId, square, pieceId }: { roomId: string; square: string; pieceId: string }) => {
+      try {
+        const room = rooms[roomId];
+        if (!room || !socket) {
+          console.error("[set_hidden_heir] Room " + roomId + " or socket not found.");
+          socket?.emit("advantageError", { message: "Room not found or error setting heir." });
+          return;
+        }
+
+        let playerColor: 'white' | 'black' | null = null;
+        let playerAdvantageStates: PlayerAdvantageStates | undefined;
+        let playerAdvantage: Advantage | undefined;
+
+        if (socket.id === room.white) {
+          playerColor = 'white';
+          playerAdvantageStates = room.whitePlayerAdvantageStates;
+          playerAdvantage = room.whiteAdvantage;
+        } else if (socket.id === room.black) {
+          playerColor = 'black';
+          playerAdvantageStates = room.blackPlayerAdvantageStates;
+          playerAdvantage = room.blackAdvantage;
+        }
+
+        if (playerColor && playerAdvantageStates) {
+          if (playerAdvantage?.id !== 'hidden_heir') {
+            socket.emit("advantageError", { message: "Hidden Heir advantage not active." });
+            return;
+          }
+
+          const gameForStartCheck = new Chess(room.fen);
+          if (gameForStartCheck.history().length > 0) {
+              socket.emit("advantageError", { message: "Cannot set Hidden Heir after the game has started." });
+              return;
+          }
+
+          if (playerAdvantageStates.hiddenHeir?.square) {
+              socket.emit("advantageError", { message: "Hidden Heir already set." });
+              return;
+          }
+          
+          let pieceUidIsValid = false;
+          if (room.pieceTracking && room.pieceTracking[pieceId]) {
+              const pieceInfo = room.pieceTracking[pieceId];
+              if (pieceInfo.color === playerColor[0] && pieceInfo.square === square) {
+                  if (pieceInfo.type === 'k') {
+                      socket.emit("advantageError", { message: "Cannot select King as Hidden Heir." });
+                      return;
+                  }
+                  pieceUidIsValid = true;
+              }
+          }
+
+          if (!pieceUidIsValid) {
+              console.error("[set_hidden_heir] Invalid pieceId " + pieceId + " or square " + square + " for player " + playerColor + ". Piece Tracking:", room.pieceTracking);
+              socket.emit("advantageError", { message: "Invalid piece selection for Hidden Heir. SID: " + socket.id + ", PID: " + pieceId + ", Sq: " + square });
+              return;
+          }
+
+          setHiddenHeirServer(playerAdvantageStates, square, pieceId);
+          console.log("[set_hidden_heir] Player " + playerColor + " (" + socket.id + ") set Hidden Heir: " + pieceId + " on " + square + " in room " + roomId + ". Updated states:", playerAdvantageStates);
+          
+          io.to(socket.id).emit("advantageStateUpdated", { 
+            playerColor, 
+            advantageStates: { 
+                hiddenHeir: playerAdvantageStates.hiddenHeir,
+                hiddenHeirCaptured: playerAdvantageStates.hiddenHeirCaptured
+            }
+          });
+
+        } else {
+          console.error("[set_hidden_heir] Could not determine player or advantage states for socket " + socket.id + " in room " + roomId);
+          socket.emit("advantageError", { message: "Error identifying player for Hidden Heir." });
+        }
+      } catch (error) {
+        console.error("[set_hidden_heir] Error in handler for room " + roomId + ", socket " + socket.id + ":", error);
+        socket?.emit("advantageError", { message: "Internal server error setting Hidden Heir." });
       }
     });
 

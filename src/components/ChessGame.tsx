@@ -56,6 +56,8 @@ import { isEligibleCoordinatedPushPair, validateCoordinatedPushClientMove } from
 import { shouldHidePiece } from "../logic/advantages/cloak";
 import { PlayerAdvantageStates, CloakState } from "../../shared/types"; // This is the one used for opponentAdvantageStates etc.
 import { applyQuantumLeapClient, getQuantumLeapPayload } from "../logic/advantages/quantumLeap";
+import { handleHeirSelectionClient, getHiddenHeirDisplaySquare, isClientHeirCaptured } from "../logic/advantages/hiddenHeir";
+import { toast } from "react-toastify";
 // Square is already imported from chess.js
 
 // Define the type for the chess.js Move object if not already available globally
@@ -174,6 +176,8 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
   // Quantum Leap States
   const [isQuantumLeapActive, setIsQuantumLeapActive] = useState<boolean>(false);
   const [quantumLeapSelections, setQuantumLeapSelections] = useState<Square[]>([]);
+  const [hiddenHeirSelectionInfo, setHiddenHeirSelectionInfo] = useState<{ square: Square | null, pieceId: string | null, captured: boolean }>({ square: null, pieceId: null, captured: false });
+  const [pieceTracking, setPieceTracking] = useState<Record<string, { type: string; color: string; square: string; alive: boolean }> | null>(null);
 
   useEffect(() => {
     if (myAdvantage?.id !== 'sacrificial_blessing') {
@@ -331,6 +335,25 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           ...data.blackPlayerAdvantageStates,
         }));
       }
+
+      // Hidden Heir specific update from advantageStateUpdated
+      if (data.playerColor === color) { // Check if the update is for the current player
+        if (data.advantageStates?.hiddenHeir) {
+          setHiddenHeirSelectionInfo(prev => ({
+            ...prev,
+            square: data.advantageStates.hiddenHeir.square || null,
+            pieceId: data.advantageStates.hiddenHeir.pieceId || null,
+            captured: data.advantageStates.hiddenHeirCaptured === true
+          }));
+          console.log("[HiddenHeir ChessGame] My Hidden Heir state updated via advantageStateUpdated (heir info present):", data.advantageStates);
+        } else if (typeof data.advantageStates?.hiddenHeirCaptured === 'boolean') {
+          setHiddenHeirSelectionInfo(prev => ({
+            ...prev,
+            captured: data.advantageStates.hiddenHeirCaptured === true
+          }));
+          console.log("[HiddenHeir ChessGame] My Hidden Heir capture status updated via advantageStateUpdated (only capture status):", data.advantageStates.hiddenHeirCaptured);
+        }
+      }
     };
 
     socket.on("advantageStateUpdated", handleAdvantageStateUpdate);
@@ -368,13 +391,17 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     };
     socket.on("opponentDisconnected", handleOpponentDisconnected);
 
-    const handleGameStart = (data: { fen: string }) => {
+    const handleGameStart = (data: { fen: string; pieceTracking?: Record<string, { type: string; color: string; square: string; alive: boolean }> }) => {
       console.log("[ChessGame event] gameStart. Loading FEN:", data.fen);
       try {
         game.load(data.fen);
         setFen(game.fen());
         setFenHistory([data.fen]); // Initialize with the starting FEN
         fenSnapshotBeforeMove.current = game.fen(); 
+        if (data.pieceTracking) {
+          setPieceTracking(data.pieceTracking);
+          console.log("[HiddenHeir] pieceTracking set on gameStart:", data.pieceTracking);
+        }
       } catch (e) {
         console.error("[ChessGame event gameStart] Error loading FEN from gameStart event:", e, "FEN was:", data.fen);
         socket.emit("requestFenSync", { roomId });
@@ -387,6 +414,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       updatedShieldedPiece?: ShieldedPieceInfo;
       whitePlayerAdvantageStatesFull?: PlayerAdvantageStates; // Added
       blackPlayerAdvantageStatesFull?: PlayerAdvantageStates; // Added
+      pieceTracking?: Record<string, { type: string; color: string; square: string; alive: boolean }>;
     };
 
     const handleReceiveMove = (data: ReceiveMoveEventData) => {
@@ -394,6 +422,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       const updatedShieldedPieceFromServer = data.updatedShieldedPiece;
       const whiteFullStates = data.whitePlayerAdvantageStatesFull;
       const blackFullStates = data.blackPlayerAdvantageStatesFull;
+      if (data.pieceTracking) {
+        setPieceTracking(data.pieceTracking);
+        console.log("[HiddenHeir] pieceTracking updated on receiveMove:", data.pieceTracking);
+      }
 
       console.log(
         `[ChessGame handleReceiveMove] START. Current color state: ${color}. Received move:`,
@@ -463,6 +495,29 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             console.log("[ChessGame handleReceiveMove] Updating blackPlayerAdvantageStates with full server state:", blackFullStates);
             setBlackPlayerAdvantageStates(prev => ({...prev, ...blackFullStates}));
           }
+          if (myCurrentFullStates?.hiddenHeir) {
+            setHiddenHeirSelectionInfo({
+              square: myCurrentFullStates.hiddenHeir.square as Square,
+              pieceId: myCurrentFullStates.hiddenHeir.pieceId,
+              captured: !!myCurrentFullStates.hiddenHeirCaptured,
+            });
+          } else {
+            setHiddenHeirSelectionInfo({ square: null, pieceId: null, captured: !!myCurrentFullStates?.hiddenHeirCaptured });
+        }
+        // Hidden Heir related console logs after state updates from full sync
+        if (myAdvantage?.id === 'hidden_heir') {
+            const myStatesToLog = color === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates;
+            if (myStatesToLog?.hiddenHeir?.square) { // Check if heir is set before logging
+                console.log(`[HiddenHeir Log handleReceiveMove] My Heir: ${myStatesToLog.hiddenHeir.pieceId} on ${myStatesToLog.hiddenHeir.square}. Captured: ${myStatesToLog.hiddenHeirCaptured}`);
+            } else if (myStatesToLog) { // Log even if heir is not set, but states exist
+                 console.log(`[HiddenHeir Log handleReceiveMove] My Hidden Heir not set or info missing. Captured status: ${myStatesToLog.hiddenHeirCaptured}`);
+            }
+
+            const opponentStatesToLog = color === 'white' ? blackPlayerAdvantageStates : whitePlayerAdvantageStates;
+            if (opponentStatesToLog?.hiddenHeir?.square && opponentStatesToLog.hiddenHeirCaptured) { // Only log opponent's if set AND captured
+                console.log(`[HiddenHeir Log handleReceiveMove] Opponent's Heir: ${opponentStatesToLog.hiddenHeir.pieceId} on ${opponentStatesToLog.hiddenHeir.square} was captured.`);
+            }
+        }
       }
       console.log(`[Cloak Client ChessGame - handleReceiveMove] Post-move states updated. Opponent Cloak: ${JSON.stringify(oppFullStates?.cloak)}. My Cloak: ${JSON.stringify(myCurrentFullStates?.cloak)}`);
 
@@ -920,6 +975,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       try {
         game.load(fenSnapshotBeforeMove.current);
         setFen(game.fen());
+        setGameOverMessage(null);
         console.log(
           "Game state reverted to FEN:",
           fenSnapshotBeforeMove.current,
@@ -1219,6 +1275,39 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
 
   // Add debug logs in onSquareClick
   const onSquareClick = (squareClicked: Square) => {
+    const pieceOnSquare = game.get(squareClicked);
+
+    // Hidden Heir Selection Logic
+    if (
+      myAdvantage?.id === 'hidden_heir' &&
+      !hiddenHeirSelectionInfo.square && // Heir not yet selected by this player
+      !hiddenHeirSelectionInfo.captured && // Should always be false before selection, but good check
+      game.history().length === 0 && // Game not started
+      color && // Player color is known
+      pieceOnSquare && pieceOnSquare.color === color[0] // Clicked one of their own pieces
+    ) {
+      if (!pieceTracking) {
+        toast.error("Piece tracking not loaded yet. Please wait for the board to finish loading.");
+        return;
+      }
+      const selectionMade = handleHeirSelectionClient(
+        roomId,
+        squareClicked,
+        pieceOnSquare.type,
+        color === "white" ? "w" : "b",
+        myAdvantage,
+        game, // chess.js instance
+        (color === 'white' ? whitePlayerAdvantageStates : blackPlayerAdvantageStates),
+        pieceTracking
+      );
+
+      if (selectionMade) {
+        // UI will update via server's "advantageStateUpdated" event
+        console.log(`[HiddenHeir ChessGame] Client-side heir selection on ${squareClicked}, sent to server.`);
+      }
+      return; // Consume the click for heir selection
+    }
+
     // Quantum Leap Selection Logic
     if (isQuantumLeapActive && color && myAdvantage?.id === 'quantum_leap') {
       const piece = game.get(squareClicked);
@@ -1453,12 +1542,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                     setEligibleSecondPawns([]);
                     setSecondPawnSelected(null);
                 } else {
-                    console.warn("[CP DEBUG] Invalid second pawn move for Coordinated Push. Client validation failed. Cancelling Coordinated Push.");
-                    if (fenSnapshotBeforeMove.current) {
-                        game.load(fenSnapshotBeforeMove.current); // Revert local board
-                        setFen(game.fen());
-                    }
-                    setIsCoordinatedPushActive(false);
+                    console.warn("[CP DEBUG] Client validation for Coordinated Push (second move) failed.");
+                    game.load(fenSnapshotBeforeMove.current); // Revert first local move
+                    setFen(fenSnapshotBeforeMove.current);
+                    setIsCoordinatedPushActive(false); // Reset toggle
                     setAwaitingSecondPush(false);
                     setFirstPushDetails(null);
                     setEligibleSecondPawns([]);
@@ -1466,10 +1553,10 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
             } else {
                 console.warn("[CP DEBUG] Invalid target square for the second pawn. Must be one square forward and empty. Cancelling Coordinated Push.");
                 if (fenSnapshotBeforeMove.current) {
-                    game.load(fenSnapshotBeforeMove.current); // Revert local board
-                    setFen(game.fen());
+                    game.load(fenSnapshotBeforeMove.current); // Revert first local move
+                    setFen(fenSnapshotBeforeMove.current);
                 }
-                setIsCoordinatedPushActive(false);
+                setIsCoordinatedPushActive(false); // Reset toggle
                 setAwaitingSecondPush(false);
                 setFirstPushDetails(null);
                 setEligibleSecondPawns([]);
@@ -2193,7 +2280,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                             if (coordinatedPushState) {
                                setCoordinatedPushState({ ...coordinatedPushState, usedThisTurn: true });
                             }
-                            setIsCoordinatedPushActive(false);
+                            setIsCoordinatedPushActive(false); 
                             setAwaitingSecondPush(false);
                             setFirstPushDetails(null);
                             setEligibleSecondPawns([]);
@@ -2206,8 +2293,6 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                             setAwaitingSecondPush(false);
                             setFirstPushDetails(null);
                             setEligibleSecondPawns([]);
-                            setSecondPawnSelected(null); // Reset selected pawn
-                            return null;
                         }
                     } else {
                         console.warn("[CP DEBUG] Second move for Coordinated Push is not a valid one-square pawn push. Cancelling Coordinated Push.");
@@ -2217,8 +2302,6 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                         setAwaitingSecondPush(false);
                         setFirstPushDetails(null);
                         setEligibleSecondPawns([]);
-                        setSecondPawnSelected(null); // Reset selected pawn
-                        return null; 
                     }
                 }
             } else {
@@ -2444,6 +2527,13 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     return move; 
   };
 
+  const handleBoardRevert = ({ fen }: { fen: string }) => {
+    game.load(fen);
+    setFen(fen);
+    setGameOverMessage(null); // Hide game over UI if showing
+  };
+socket.on("boardRevert", handleBoardRevert);
+
   const handleCancelLc = () => {
     setIsLightningCaptureActive(false);
     setIsAwaitingSecondLcMove(false);
@@ -2458,6 +2548,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
       console.warn("[ChessGame handleCancelLc] fenSnapshotBeforeMove.current was not set, cannot revert.");
     }
   };
+  
 
   const customSquareStyles = useMemo(() => {
     const styles: { [key: string]: React.CSSProperties } = {};
@@ -2518,6 +2609,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
         const stylingGame = new Chess();
         try {
           stylingGame.load(blessingFenForStyling);
+          console.log('[SB Debug customSquareStyles] stylingGame loaded with store FEN. Current FEN:', stylingGame.fen());
         } catch (e) {
           console.error("[SB Debug customSquareStyles] Error loading FEN from store into stylingGame:", e);
           return styles; 
@@ -2547,7 +2639,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
     }
 
     return styles;
-  }, [selectedSquare, validMoves, isVoidStepToggleActive, currentPlayerAdvantageStates, color, game.turn(), isQuantumLeapActive, quantumLeapSelections, isSacrificialBlessingActive, availablePiecesForBlessing, selectedPieceForBlessing]);
+  }, [selectedSquare, validMoves, isVoidStepToggleActive, currentPlayerAdvantageStates, color, game.turn(), isQuantumLeapActive, quantumLeapSelections, isSacrificialBlessingActive, availablePiecesForBlessing, selectedPieceForBlessing, myAdvantage, hiddenHeirSelectionInfo]);
 
   // Add handler for advantage state update
   const handleAdvantageStateUpdate = (data: any) => {
@@ -2597,6 +2689,22 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
           <p>
             Your Advantage: <strong>{myAdvantage.name}</strong>
           </p>
+            {/* Hidden Heir UI Prompts */}
+            {myAdvantage?.id === 'hidden_heir' && !hiddenHeirSelectionInfo.square && game.history().length === 0 && (
+              <div style={{ padding: '10px', margin: '10px 0', background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: '4px' }}>
+                <p><strong>Hidden Heir:</strong> Select one of your pieces (excluding the king) to be your Hidden Heir. This piece must be captured before your opponent can checkmate you.</p>
+              </div>
+            )}
+            {myAdvantage?.id === 'hidden_heir' && hiddenHeirSelectionInfo.square && !hiddenHeirSelectionInfo.captured && (
+              <div style={{ padding: '10px', margin: '10px 0', background: '#dcedc8', border: '1px solid #a5d6a7', borderRadius: '4px' }}>
+                <p><strong>Hidden Heir:</strong> Your heir is on {hiddenHeirSelectionInfo.square}. Piece ID: {hiddenHeirSelectionInfo.pieceId || 'N/A'}.</p>
+              </div>
+            )}
+            {myAdvantage?.id === 'hidden_heir' && hiddenHeirSelectionInfo.captured && (
+              <div style={{ padding: '10px', margin: '10px 0', background: '#ffcdd2', border: '1px solid #ef9a9a', borderRadius: '4px' }}>
+                <p><strong>Hidden Heir:</strong> Your heir on {hiddenHeirSelectionInfo.square} (Piece ID: {hiddenHeirSelectionInfo.pieceId || 'N/A'}) has been captured!</p>
+              </div>
+            )}
           {myAdvantage.id === 'sacrificial_blessing' && (
             <p><em>{hasUsedMySacrificialBlessing ? "Sacrificial Blessing has been used." : "The first time one of your Knights or Bishops is captured, you may immediately move another one of your Knights or Bishops (if you have one) to any empty square on the board. Doesn't count as a turn."}</em></p>
           )}
@@ -2973,6 +3081,7 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                 const stylingGame = new Chess();
                 try {
                   stylingGame.load(blessingFenForStyling);
+                  console.log('[SB Debug customSquareStyles] stylingGame loaded with store FEN. Current FEN:', stylingGame.fen());
                 } catch (e) {
                   console.error("[SB Debug customSquareStyles] Error loading FEN from store into stylingGame:", e);
                   return styles; 
@@ -3020,6 +3129,15 @@ const [arcaneReinforcementSpawnedSquare, setArcaneReinforcementSpawnedSquare] = 
                   styles[sq] = { ...styles[sq], background: "rgba(220, 180, 255, 0.4)" };
                 });
               }
+            }
+
+            // Hidden Heir Highlighting (current player's active heir)
+            if (myAdvantage?.id === 'hidden_heir' && hiddenHeirSelectionInfo.square && !hiddenHeirSelectionInfo.captured) {
+              styles[hiddenHeirSelectionInfo.square] = {
+                ...styles[hiddenHeirSelectionInfo.square], // Preserve other styles if any
+                background: "rgba(76, 175, 80, 0.3)", // A green highlight
+                boxShadow: "inset 0 0 5px rgba(76, 175, 80, 0.7)",
+              };
             }
 
             return styles;

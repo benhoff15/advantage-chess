@@ -31,7 +31,7 @@ export const ADVANTAGE_POOL: Advantage[] = [
 
   // Legendary (5%)
   { id: "second_wind", name: "Second Wind", description: "After checkmate, get one move to counter-mate.", rarity: "legendary" },
-  { id: "quantum_leap", name: "Quantum Leap", description: "Swap any two of your pieces once. Doesn't count as a turn", rarity: "legendary" },
+  { id: "quantum_leap", name: "Quantum Leap", description: "Swap any two of your pieces once. Doesn't count as a turn", rarity: "legendary" }, // done
   { id: "secret_weapon", name: "Secret Weapon", description: "One pawn is secretly a queen in disguise.", rarity: "legendary" },
   { id: "hidden_heir", name: "Hidden Heir", description: "Select one piece before the game starts. This piece must be captured before the opponent can checkmate.", rarity: "legendary" },
   // Rotate in later{ id: "time_rewind", name: "Time Rewind", description: "Undo both players’ last full moves after a capture.", rarity: "legendary" },
