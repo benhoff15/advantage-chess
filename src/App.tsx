@@ -1,23 +1,25 @@
-import React from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-import ChessGame from "./components/ChessGame";
-import { ToastContainer } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import Layout from "./components/Layout";
+import HomePage from "./pages/HomePage";
+import GlossaryPage from "./pages/GlossaryPage";
+import ProfilePage from "./pages/ProfilePage";
+import GamePage from "./pages/GamePage";
+import NotFound from "./pages/NotFound";
 
 function App() {
   return (
     <Router>
-      <ToastContainer />
       <Routes>
-        <Route path="/" element={<Navigate to={`/game/${generateRandomRoomId()}`} replace />} />
-        <Route path="/game/:roomId" element={<ChessGame />} />
+        <Route path="/" element={<Layout />}>
+          <Route index element={<HomePage />} />
+          <Route path="glossary" element={<GlossaryPage />} />
+          <Route path="profile" element={<ProfilePage />} />
+          <Route path="game/:roomId" element={<GamePage />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
       </Routes>
     </Router>
   );
-}
-
-function generateRandomRoomId() {
-  return Math.random().toString(36).substring(2, 8); // e.g., "x3d2f1"
 }
 
 export default App;
